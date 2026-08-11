@@ -180,14 +180,25 @@ public static class MetadataResolver
                             && f.BackingData?.FieldOffset == memory.Addend);
                 }
 
-                if (field == null) // TODO: Support nested fields (Field1.Field2.Field3)
-                    continue;
+                FieldAnalysisContext[]? innerPath = null;
+
+                if (field == null)
+                {
+                    // The offset can land inside a value-type field, which means the source was a nested
+                    // access such as a.b.c. Walk into the containing field and keep going until the
+                    // remaining offset lands exactly on a field.
+                    if (ResolveNestedField(owner, memory.Addend, staticOwner != null) is not { } nested)
+                        continue;
+
+                    field = nested.Outer;
+                    innerPath = nested.Path;
+                }
 
                 // make sure we have a full GIT for field access. open type is bad.
                 if (genericOwner != null)
                     field = new ConcreteGenericFieldAnalysisContext(field, genericOwner);
 
-                instruction.SetOperand(i, new FieldReference(field, local, (int)memory.Addend));
+                instruction.SetOperand(i, new FieldReference(field, local, (int)memory.Addend, innerPath));
                 changed = true;
             }
         }
@@ -715,5 +726,102 @@ public static class MetadataResolver
 
             instr.SetOperand(0, new FieldReference(field, local, (int)memory.Addend));
         }
+    }
+
+
+    /// <summary>
+    /// IL2CPP field offsets on a value type are measured from the start of its boxed form, so the
+    /// object header has to be added back when descending into one embedded in another type.
+    /// </summary>
+    private const long ValueTypeHeaderSize = 0x10;
+
+    private const int MaxNestingDepth = 8;
+
+    /// <summary>
+    /// Resolves an offset that does not name a field directly but falls inside a value-type field,
+    /// which is how a nested access such as <c>a.b.c</c> appears once compiled. Returns the outermost
+    /// field and the remaining ones, or null if any step is ambiguous - a wrong guess here would
+    /// silently produce a read of the wrong field, so only exact matches are accepted.
+    /// </summary>
+    private static (FieldAnalysisContext Outer, FieldAnalysisContext[] Path)? ResolveNestedField(TypeAnalysisContext owner, long addend, bool isStatic)
+    {
+        var container = FindContainingValueTypeField(owner, addend, isStatic);
+        if (container == null)
+            return null;
+
+        var outer = container.Value.Field;
+        var path = new List<FieldAnalysisContext>();
+        var remaining = addend - container.Value.Offset + ValueTypeHeaderSize;
+        var current = outer.FieldType;
+
+        for (var depth = 0; depth < MaxNestingDepth; depth++)
+        {
+            var exact = FindFieldAtExactOffset(current, remaining);
+            if (exact != null)
+            {
+                path.Add(exact);
+                return (outer, path.ToArray());
+            }
+
+            var inner = FindContainingValueTypeField(current, remaining, isStatic: false);
+            if (inner == null)
+                return null;
+
+            path.Add(inner.Value.Field);
+            remaining = remaining - inner.Value.Offset + ValueTypeHeaderSize;
+            current = inner.Value.Field.FieldType;
+        }
+
+        return null;
+    }
+
+    private static FieldAnalysisContext? FindFieldAtExactOffset(TypeAnalysisContext type, long offset)
+    {
+        for (var candidate = type; candidate != null; candidate = candidate.BaseType)
+        {
+            foreach (var field in candidate.Fields)
+            {
+                if (field.IsStatic || (field.Attributes & FieldAttributes.Literal) != 0)
+                    continue;
+
+                if (field.BackingData?.FieldOffset == offset)
+                    return field;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the value-type field the offset falls within: the one with the greatest offset not past it.
+    /// </summary>
+    private static (FieldAnalysisContext Field, long Offset)? FindContainingValueTypeField(TypeAnalysisContext type, long offset, bool isStatic)
+    {
+        FieldAnalysisContext? best = null;
+        long bestOffset = -1;
+
+        for (var candidate = type; candidate != null; candidate = candidate.BaseType)
+        {
+            foreach (var field in candidate.Fields)
+            {
+                if (field.IsStatic != isStatic || (field.Attributes & FieldAttributes.Literal) != 0)
+                    continue;
+
+                if (field.FieldType is not { IsValueType: true } fieldType || fieldType.IsEnumType)
+                    continue;
+
+                var fieldOffset = field.BackingData?.FieldOffset ?? -1;
+                if (fieldOffset < 0 || fieldOffset >= offset)
+                    continue;
+
+                if (fieldOffset > bestOffset)
+                {
+                    best = field;
+                    bestOffset = fieldOffset;
+                }
+            }
+        }
+
+        return best == null ? null : (best, bestOffset);
     }
 }

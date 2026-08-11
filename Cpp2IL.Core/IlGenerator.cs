@@ -290,11 +290,25 @@ public static class IlGenerator
             case OpCode.Move:
                 if (instruction.Operands[0] is FieldReference field) // stfld takes instance before value so LoadOperand StoreToOperand doesn't work
                 {
-                    if (!field.Field.IsStatic)
+                    // for a.b.c the store lands on the innermost field
+                    var written = field.InnerPath.Length > 0 ? field.InnerPath[^1] : field.Field;
+
+                    if (!written.IsStatic)
+                    {
                         LoadLocal(field.Local, method, locals);
 
-                    LoadOperand(instruction.Operands[1], method, locals, writeLine, field.Field.FieldType);
-                    instructions.Add(field.Field.IsStatic ? CilOpCodes.Stsfld : CilOpCodes.Stfld, field.Field.ToFieldDescriptor());
+                        if (field.InnerPath.Length > 0)
+                        {
+                            // ldflda, not ldfld: writing through a copy of the struct would be discarded
+                            instructions.Add(CilOpCodes.Ldflda, field.Field.ToFieldDescriptor());
+
+                            for (var nested = 0; nested < field.InnerPath.Length - 1; nested++)
+                                instructions.Add(CilOpCodes.Ldflda, field.InnerPath[nested].ToFieldDescriptor());
+                        }
+                    }
+
+                    LoadOperand(instruction.Operands[1], method, locals, writeLine, written.FieldType);
+                    instructions.Add(written.IsStatic ? CilOpCodes.Stsfld : CilOpCodes.Stfld, written.ToFieldDescriptor());
                     break;
                 }
 
@@ -690,6 +704,11 @@ public static class IlGenerator
 
                 LoadLocal(field.Local, method, locals);
                 instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor());
+
+                // a.b.c: keep reading into the value-type field that was loaded
+                foreach (var nested in field.InnerPath)
+                    instructions.Add(CilOpCodes.Ldfld, nested.ToFieldDescriptor());
+
                 break;
             case MemoryOperand memory:
                 if (memory.Index == null && memory.Addend == 0 && memory.Scale == 0
@@ -882,9 +901,11 @@ public static class IlGenerator
                 break;
 
             case FieldReference field:
-                var fieldDescriptor = field.Field.ToFieldDescriptor();
+                // for a.b.c the store lands on the innermost field; the ones before it only get us there
+                var storedField = field.InnerPath.Length > 0 ? field.InnerPath[^1] : field.Field;
+                var fieldDescriptor = storedField.ToFieldDescriptor();
 
-                if (field.Field.IsStatic)
+                if (storedField.IsStatic)
                 {
                     instructions.Add(CilOpCodes.Stsfld, fieldDescriptor);
                     break;
@@ -897,6 +918,16 @@ public static class IlGenerator
 
                 instructions.Add(CilOpCodes.Stloc, scratch);
                 LoadLocal(field.Local, method, locals);
+
+                if (field.InnerPath.Length > 0)
+                {
+                    // ldflda, not ldfld: writing through a copy of the struct would be discarded
+                    instructions.Add(CilOpCodes.Ldflda, field.Field.ToFieldDescriptor());
+
+                    for (var nested = 0; nested < field.InnerPath.Length - 1; nested++)
+                        instructions.Add(CilOpCodes.Ldflda, field.InnerPath[nested].ToFieldDescriptor());
+                }
+
                 instructions.Add(CilOpCodes.Ldloc, scratch);
                 instructions.Add(CilOpCodes.Stfld, fieldDescriptor);
                 break;

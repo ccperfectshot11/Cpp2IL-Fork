@@ -487,7 +487,7 @@ public static class LocalVariables
         var type = operand switch
         {
             LocalVariable { Type: { } localType } => localType,
-            FieldReference field => field.Field.FieldType,
+            FieldReference field => field.ResultType,
             _ => null,
         };
 
