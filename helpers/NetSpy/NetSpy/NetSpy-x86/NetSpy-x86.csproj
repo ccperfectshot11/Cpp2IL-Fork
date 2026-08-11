@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <Nullable>enable</Nullable>
+    <OutputPath Condition=" '$(IsDotNetFramework)' == 'true' OR '$(RuntimeIdentifier)' == '' ">..\NetSpy\bin\$(Configuration)\</OutputPath>
+
+    <RuntimeIdentifiers>$(NetSpyRuntimeIdentifiers)</RuntimeIdentifiers>
+    <OutputType>WinExe</OutputType>
+    <Prefer32Bit>true</Prefer32Bit>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+
+    <PlatformTarget Condition="'$(IsDotNetFramework)' == 'false' AND '$(RuntimeIdentifier)' == ''" >x86</PlatformTarget>
+
+    <DefineConstants Condition="'$(RuntimeIdentifier)' != ''">BUILD_SELF_CONTAINED</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.EnableHardwareAccelerationInRdp" Value="true" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <ApplicationIcon>..\NetSpy\Images\NetSpy-x86.ico</ApplicationIcon>
+    <ApplicationManifest>..\NetSpy\app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\NetSpy\app.config" Condition=" '$(IsDotNetFramework)' == 'true' " >
+      <Link>app.config</Link>
+    </None>
+    <None Include="..\NetSpy\app.manifest">
+      <Link>app.manifest</Link>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetSpy\NetSpy.csproj" />
+  </ItemGroup>
+
+</Project>

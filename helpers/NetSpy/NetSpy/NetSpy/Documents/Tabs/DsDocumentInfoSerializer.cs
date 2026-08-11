@@ -1,0 +1,47 @@
+/*
+    Copyright (C) 2014-2019 de4dot@gmail.com
+
+    This file is part of NetSpy
+
+    NetSpy is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    NetSpy is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with NetSpy.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+using System;
+using NetSpy.Contracts.Documents;
+using NetSpy.Contracts.Settings;
+
+namespace NetSpy.Documents.Tabs {
+	static class DsDocumentInfoSerializer {
+		const string DOCUMENTINFO_NAME_ATTR = "name";
+		const string DOCUMENTINFO_TYPE_ATTR = "type";
+
+		public static DsDocumentInfo? TryLoad(ISettingsSection section) {
+			var name = section.Attribute<string>(DOCUMENTINFO_NAME_ATTR);
+			var type = section.Attribute<Guid?>(DOCUMENTINFO_TYPE_ATTR) ?? DocumentConstants.DOCUMENTTYPE_FILE;
+			if (string2.IsNullOrEmpty(name))
+				return null;
+			return new DsDocumentInfo(name, type);
+		}
+
+		public static void Save(ISettingsSection section, DsDocumentInfo info) {
+			// Assume that instances with a non-null Data property can't be serialized
+			if (info.Data is not null)
+				return;
+
+			section.Attribute(DOCUMENTINFO_NAME_ATTR, info.Name);
+			if (info.Type != DocumentConstants.DOCUMENTTYPE_FILE)
+				section.Attribute(DOCUMENTINFO_TYPE_ATTR, info.Type);
+		}
+	}
+}

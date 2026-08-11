@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <MakeEverythingPublicAssemblies>Microsoft.CodeAnalysis.CSharp;Microsoft.CodeAnalysis.CSharp.Workspaces;Microsoft.CodeAnalysis.CSharp.Features</MakeEverythingPublicAssemblies>
+    <MakeEverythingPublicIVTString>$(AssemblyName)</MakeEverythingPublicIVTString>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildProjectDirectory)\..\..\..\Build\MakeEverythingPublic\MakeEverythingPublic.tasks" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetSpy.Roslyn.EditorFeatures\NetSpy.Roslyn.EditorFeatures.csproj" />
+    <ProjectReference Include="..\NetSpy.Roslyn.Internal\NetSpy.Roslyn.Internal.csproj" />
+    <ProjectReference Include="..\NetSpy.Roslyn\NetSpy.Roslyn.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="$(RoslynVersion)" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
+  </ItemGroup>
+
+</Project>

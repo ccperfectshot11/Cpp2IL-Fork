@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <Import Project="..\..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <AssemblyName>NetSpy.Decompiler.ILSpy.x</AssemblyName>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <OutputPath>..\..\..\NetSpy\NetSpy\bin\$(Configuration)\</OutputPath>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\NetSpy.Decompiler.ILSpy.Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>NetSpy.Decompiler.ILSpy.Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\NetSpy.Decompiler.ILSpy.Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>NetSpy.Decompiler.ILSpy.Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.App\NetSpy.Contracts.App.csproj" />
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+    <ProjectReference Include="..\NetSpy.Decompiler.ILSpy.Core\NetSpy.Decompiler.ILSpy.Core.csproj" />
+    <ProjectReference Include="..\ICSharpCode.Decompiler\ICSharpCode.Decompiler\ICSharpCode.Decompiler.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
+  </ItemGroup>
+
+</Project>

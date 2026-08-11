@@ -1,0 +1,48 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>Copyright (C) 2025 Washi</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <AssemblyName>NetSpy.StringSearcher.x</AssemblyName>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <OutputPath>..\..\NetSpy\NetSpy\bin\$(Configuration)\</OutputPath>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="IsExternalInit" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Nullable" Version="1.3.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\NetSpy\NetSpy.Contracts.App\NetSpy.Contracts.App.csproj" />
+    <ProjectReference Include="..\..\NetSpy\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\NetSpy.StringSearcher.Resources.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>NetSpy.StringSearcher.Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\NetSpy.StringSearcher.Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>NetSpy.StringSearcher.Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+</Project>

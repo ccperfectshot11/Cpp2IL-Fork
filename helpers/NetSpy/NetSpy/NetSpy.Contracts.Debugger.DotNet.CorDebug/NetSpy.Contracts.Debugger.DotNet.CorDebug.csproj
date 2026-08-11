@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetSpy.Contracts.Debugger.DotNet\NetSpy.Contracts.Debugger.DotNet.csproj" />
+    <ProjectReference Include="..\NetSpy.Contracts.Debugger\NetSpy.Contracts.Debugger.csproj" />
+    <ProjectReference Include="..\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -16,3 +16,8 @@ launchsettings.json
 artifacts/
 
 .DS_Store
+
+# helper build output
+helpers/**/bin/
+helpers/**/obj/
+helpers/**/0Bins/

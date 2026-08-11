@@ -1,0 +1,119 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <Import Project="..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <!-- NetSpy: output file is NetSpy.exe. RootNamespace stays "NetSpy" so embedded
+         resource logical names (NetSpy.LicenseInfo.*) and namespaces are unchanged.
+         The InternalsVisibleTo grants in the NetSpy.* assemblies were updated to "NetSpy". -->
+    <AssemblyName>NetSpy</AssemblyName>
+    <RootNamespace>NetSpy</RootNamespace>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+
+    <RuntimeIdentifiers>$(NetSpyRuntimeIdentifiers)</RuntimeIdentifiers>
+    <OutputType>WinExe</OutputType>
+    <Prefer32Bit>false</Prefer32Bit>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Media.EnableHardwareAccelerationInRdp" Value="true" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <ApplicationIcon>Images\NetSpy.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <Choose>
+    <!-- Use the x86 icon when publishing the .NET x86 build -->
+    <When Condition="'$(RuntimeIdentifier)' == 'win-x86' And '$(IsDotNetFramework)' == 'false'">
+      <PropertyGroup>
+        <ApplicationIcon>Images\NetSpy-x86.ico</ApplicationIcon>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <ApplicationIcon>Images\NetSpy.ico</ApplicationIcon>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+
+  <ItemGroup>
+    <Compile Remove="MainApp\DevBuildWarning.cs" />
+    <None Include="MainApp\DevBuildWarning.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetSpy.Contracts.Debugger.DotNet\NetSpy.Contracts.Debugger.DotNet.csproj" />
+    <ProjectReference Include="..\NetSpy.Contracts.Debugger\NetSpy.Contracts.Debugger.csproj" />
+    <ProjectReference Include="..\NetSpy.Contracts.App\NetSpy.Contracts.App.csproj" />
+    <ProjectReference Include="..\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+    <ProjectReference Include="..\NetSpy.Images\NetSpy.Images.csproj" />
+    <ProjectReference Include="..\Roslyn\NetSpy.Roslyn.CSharp.EditorFeatures\NetSpy.Roslyn.CSharp.EditorFeatures.csproj" />
+    <ProjectReference Include="..\Roslyn\NetSpy.Roslyn.EditorFeatures\NetSpy.Roslyn.EditorFeatures.csproj" />
+    <ProjectReference Include="..\Roslyn\NetSpy.Roslyn\NetSpy.Roslyn.csproj" />
+    <ProjectReference Include="..\NetSpy.Decompiler\NetSpy.Decompiler.csproj" />
+    <ProjectReference Include="..\..\Libraries\ICSharpCode.TreeView\ICSharpCode.TreeView.csproj" />
+    <ProjectReference Include="..\Roslyn\NetSpy.Roslyn.VisualBasic.EditorFeatures\NetSpy.Roslyn.VisualBasic.EditorFeatures.vbproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Images\NetSpy.ico" />
+    <EmbeddedResource Include="LicenseInfo\CREDITS.txt" />
+    <None Remove="app.config" Condition=" '$(IsDotNetFramework)' != 'true' " />
+    <None Include="app.manifest" />
+    <None Include="Themes\*.dntheme">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="FileLists\*.FileList.xml;LicenseInfo\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\NetSpy.Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>NetSpy.Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\NetSpy.Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>NetSpy.Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(IsDotNetFramework)' == 'true' ">
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="PresentationFramework.Aero" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Iced" Version="$(IcedVersion)" />
+    <PackageReference Include="Microsoft.VisualStudio.Composition" Version="$(MSVSCompositionVersion)" />
+    <PackageReference Include="Microsoft.VisualStudio.Language.Intellisense" Version="$(MSVSIntellisenseVersion)" />
+    <!-- Self contained .NET apps already ship with this DLL (not necessarily the same version, though) -->
+    <PackageReference Include="Microsoft.DiaSymReader.Native" Version="$(DiaSymReaderVersion)" Condition=" '$(IsSelfContainedDotNet)' != 'true' " />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
+    <PackageReference Include="MessagePack" Version="$(MessagePackVersion)" />
+  </ItemGroup>
+
+</Project>

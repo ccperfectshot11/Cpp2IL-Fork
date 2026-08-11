@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <Import Project="..\..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <AssemblyName>NetSpy.Debugger.DotNet.x</AssemblyName>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <OutputPath>..\..\..\NetSpy\NetSpy\bin\$(Configuration)\</OutputPath>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\NetSpy.Debugger.DotNet.Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>NetSpy.Debugger.DotNet.Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\NetSpy.Debugger.DotNet.Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>NetSpy.Debugger.DotNet.Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.Debugger.DotNet\NetSpy.Contracts.Debugger.DotNet.csproj" />
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.Debugger\NetSpy.Contracts.Debugger.csproj" />
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.App\NetSpy.Contracts.App.csproj" />
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+    <ProjectReference Include="..\..\..\NetSpy\NetSpy.Decompiler\NetSpy.Decompiler.csproj" />
+    <ProjectReference Include="..\NetSpy.Debugger.DotNet.Interpreter\NetSpy.Debugger.DotNet.Interpreter.csproj" />
+    <ProjectReference Include="..\NetSpy.Debugger.DotNet.Metadata\NetSpy.Debugger.DotNet.Metadata.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="debug\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <Copyright>$(NetSpyAssemblyCopyright)</Copyright>
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <InformationalVersion>$(NetSpyAssemblyInformationalVersion)</InformationalVersion>
+
+    <!-- NetSpy loads assemblies named *.x.dll as extensions -->
+    <AssemblyName>NetSpy.Deobfuscator.x</AssemblyName>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+    <!-- Land next to the app so the extension (and its de4dot deps) are loaded at runtime -->
+    <OutputPath>..\..\NetSpy\NetSpy\bin\$(Configuration)\</OutputPath>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <!-- The de4dot libraries live in a subfolder and are consumed via ProjectReference only.
+       Exclude them from this project's own source globbing, otherwise the SDK's default
+       **/*.cs pattern would compile de4dot's sources (and its obj files) into this assembly. -->
+  <ItemGroup>
+    <Compile Remove="de4dot\**\*.cs" />
+    <EmbeddedResource Remove="de4dot\**" />
+    <None Remove="de4dot\**" />
+    <Page Remove="de4dot\**" />
+    <Resource Remove="de4dot\**" />
+  </ItemGroup>
+
+  <!-- de4dot uses System.Drawing in several deobfuscators; on .NET (non-Framework) it's a
+       NuGet package that must be deployed next to the extension or de4dot fails at runtime. -->
+  <ItemGroup Condition=" '$(IsDotNetFramework)' != 'true' ">
+    <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\NetSpy\NetSpy.Contracts.App\NetSpy.Contracts.App.csproj" />
+    <ProjectReference Include="..\..\NetSpy\NetSpy.Contracts.Logic\NetSpy.Contracts.Logic.csproj" />
+    <!-- The de4dot deobfuscation engine (all obfuscators) -->
+    <ProjectReference Include="de4dot\de4dot.code\de4dot.code.csproj" />
+    <ProjectReference Include="de4dot\de4dot.blocks\de4dot.blocks.csproj" />
+  </ItemGroup>
+
+</Project>

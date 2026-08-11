@@ -1,0 +1,149 @@
+﻿/*
+    Copyright (C) 2022 ElektroKill
+
+    This file is part of NetSpy
+
+    NetSpy is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    NetSpy is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with NetSpy.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+using System;
+using System.ComponentModel.Composition;
+using System.IO;
+using System.Linq;
+using System.Windows.Threading;
+using NetSpy.Contracts.App;
+using NetSpy.Contracts.Decompiler;
+using NetSpy.Contracts.Documents.Tabs;
+using NetSpy.Contracts.Documents.Tabs.DocViewer;
+using NetSpy.Contracts.Documents.TreeView;
+using NetSpy.Contracts.MVVM;
+using NetSpy.Contracts.Text;
+using NetSpy.Decompiler;
+using NetSpy.Documents.Tabs.DocViewer;
+using NetSpy.Properties;
+
+namespace NetSpy.Documents.Tabs {
+	[ExportTabSaverProvider(Order = TabConstants.ORDER_DEFAULTTABSAVERPROVIDER)]
+	sealed class NodeTabSaverProvider : ITabSaverProvider {
+		readonly IDocumentTreeNodeDecompiler documentTreeNodeDecompiler;
+		readonly IMessageBoxService messageBoxService;
+		readonly IPickSaveFilename pickSaveFilename;
+
+		[ImportingConstructor]
+		NodeTabSaverProvider(IDocumentTreeNodeDecompiler documentTreeNodeDecompiler, IMessageBoxService messageBoxService, IPickSaveFilename pickSaveFilename) {
+			this.documentTreeNodeDecompiler = documentTreeNodeDecompiler;
+			this.messageBoxService = messageBoxService;
+			this.pickSaveFilename = pickSaveFilename;
+		}
+
+		public ITabSaver? Create(IDocumentTab tab) => NodeTabSaver.TryCreate(documentTreeNodeDecompiler, tab, messageBoxService, pickSaveFilename);
+	}
+
+	sealed class NodeTabSaver : ITabSaver {
+		readonly IMessageBoxService messageBoxService;
+		readonly IDocumentTab tab;
+		readonly IDocumentTreeNodeDecompiler documentTreeNodeDecompiler;
+		readonly IDecompiler decompiler;
+		readonly DocumentTreeNodeData[] nodes;
+		readonly IDocumentViewer documentViewer;
+		readonly IPickSaveFilename pickSaveFilename;
+
+		public static NodeTabSaver? TryCreate(IDocumentTreeNodeDecompiler documentTreeNodeDecompiler, IDocumentTab tab, IMessageBoxService messageBoxService, IPickSaveFilename pickSaveFilename) {
+			if (tab.IsAsyncExecInProgress)
+				return null;
+			if (tab.UIContext is not IDocumentViewer documentViewer)
+				return null;
+			var decompiler = (tab.Content as IDecompilerTabContent)?.Decompiler;
+			if (decompiler is null)
+				return null;
+			var nodes = tab.Content.Nodes.ToArray();
+			if (nodes.Length == 0)
+				return null;
+			return new NodeTabSaver(messageBoxService, tab, documentTreeNodeDecompiler, decompiler, documentViewer, pickSaveFilename, nodes);
+		}
+
+		NodeTabSaver(IMessageBoxService messageBoxService, IDocumentTab tab, IDocumentTreeNodeDecompiler documentTreeNodeDecompiler, IDecompiler decompiler, IDocumentViewer documentViewer, IPickSaveFilename pickSaveFilename, DocumentTreeNodeData[] nodes) {
+			this.messageBoxService = messageBoxService;
+			this.tab = tab;
+			this.documentTreeNodeDecompiler = documentTreeNodeDecompiler;
+			this.decompiler = decompiler;
+			this.documentViewer = documentViewer;
+			this.nodes = nodes;
+			this.pickSaveFilename = pickSaveFilename;
+		}
+
+		public bool CanSave => !tab.IsAsyncExecInProgress;
+		public string MenuHeader => NetSpy_Resources.Button_SaveCode;
+
+		sealed class DecompileContext : IDisposable {
+			public DecompileNodeContext? DecompileNodeContext;
+			public TextWriter? Writer;
+			public void Dispose() => Writer?.Dispose();
+		}
+
+		DecompileContext CreateDecompileContext(string filename) {
+			var decompileContext = new DecompileContext();
+			try {
+				var decompilationContext = new DecompilationContext();
+				decompileContext.Writer = new StreamWriter(filename);
+				var output = new TextWriterDecompilerOutput(decompileContext.Writer);
+				var dispatcher = Dispatcher.CurrentDispatcher;
+				decompileContext.DecompileNodeContext = new DecompileNodeContext(decompilationContext, decompiler, output, NullDocumentWriterService.Instance, dispatcher);
+				return decompileContext;
+			}
+			catch {
+				decompileContext.Dispose();
+				throw;
+			}
+		}
+
+		sealed class NullDocumentWriterService : IDocumentWriterService {
+			public static readonly NullDocumentWriterService Instance = new NullDocumentWriterService();
+			public void Write(IDecompilerOutput output, string text, string contentType) =>
+				output.Write(text, BoxedTextColor.Text);
+		}
+
+		DecompileContext? CreateDecompileContext() {
+			var filename = FilenameUtils.CleanName(nodes[0].ToString(decompiler, DocumentNodeWriteOptions.Title)) + decompiler.FileExtension;
+
+			var ext = decompiler.FileExtension;
+			if (ext.StartsWith(".", StringComparison.Ordinal))
+				ext = ext.Substring(1);
+
+			filename = pickSaveFilename.GetFilename(filename, ext, $"{decompiler.GenericNameUI}|*{decompiler.FileExtension}|{PickFilenameConstants.AnyFilenameFilter}");
+			return filename is null ? null : CreateDecompileContext(filename);
+		}
+
+		public void Save() {
+			if (!CanSave)
+				return;
+
+			var ctx = CreateDecompileContext();
+			if (ctx is null)
+				return;
+
+			tab.AsyncExec(cs => {
+				ctx.DecompileNodeContext!.DecompilationContext.CancellationToken = cs.Token;
+				documentViewer.ShowCancelButton(NetSpy_Resources.SavingCode, cs.Cancel);
+			}, () => {
+				documentTreeNodeDecompiler.Decompile(ctx.DecompileNodeContext!, nodes);
+			}, result => {
+				ctx.Dispose();
+				documentViewer.HideCancelButton();
+				if (result.Exception is not null)
+					messageBoxService.Show(result.Exception);
+			});
+		}
+	}
+}

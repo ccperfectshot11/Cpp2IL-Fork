@@ -1,0 +1,29 @@
+<Project>
+
+  <!-- Inherit NetSpy's target frameworks (net48;net10.0-windows), dnlib version, lang version, etc. -->
+  <Import Project="$(MSBuildThisFileDirectory)..\..\..\NetSpyCommon.props" />
+
+  <PropertyGroup>
+    <!-- Sign with NetSpy's key so signed NetSpy assemblies can reference these on .NET Framework -->
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)..\..\..\NetSpy.snk</AssemblyOriginatorKeyFile>
+
+    <!-- CRITICAL: because these are signed with NetSpy's key, NetSpy's extension loader
+         (CanLoadExtension) requires any referenced assembly sharing its public key to be
+         version >= the core version (currently 1.0.0.0). Inheriting $(NetSpyAssemblyVersion)
+         keeps them in lockstep; otherwise they'd default to a mismatched version and the whole
+         deobfuscator extension would be rejected silently. -->
+    <Version>$(NetSpyAssemblyVersion)</Version>
+    <AssemblyVersion>$(NetSpyAssemblyVersion)</AssemblyVersion>
+    <FileVersion>$(NetSpyAssemblyVersion)</FileVersion>
+
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- de4dot is third-party code: don't fail the build on its warnings -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors>false</WarningsAsErrors>
+    <Nullable>disable</Nullable>
+    <!-- Silence de4dot's known analyzer noise so it never blocks the build -->
+    <NoWarn>$(NoWarn);CA2200;SYSLIB0011;CS0618;CS0612;NU1701;CS1591;CA1416</NoWarn>
+  </PropertyGroup>
+
+</Project>
