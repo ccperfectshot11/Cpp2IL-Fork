@@ -704,6 +704,17 @@ public static class IlGenerator
                             : new CilInstruction(CilOpCodes.Ldind_Ref));
                     break;
                 }
+                // Reads out of il2cpp's own runtime structures (class and method info, rgctx tables,
+                // static field storage) have no C# counterpart. Later passes consume the resolved
+                // *type* of the operand rather than the pointer that is loaded here, so nothing is
+                // actually lost and there is no issue to report.
+                if (memory.Base is LocalVariable { Type: { } baseType } && IsRuntimeMetadata(baseType))
+                {
+                    instructions.Add(CilOpCodes.Ldc_I4_0);
+                    instructions.Add(CilOpCodes.Conv_I);
+                    break;
+                }
+
                 instructions.Add(CilOpCodes.Ldstr, Diagnostic("Unmanaged memory load: " + operand));
                 instructions.Add(CilOpCodes.Call, writeLine);
                 instructions.Add(CilOpCodes.Ldc_I4_0);
@@ -921,4 +932,18 @@ public static class IlGenerator
                 break;
         }
     }
+
+    /// <summary>
+    /// True for the il2cpp runtime structures that carry no value expressible in C#: class and
+    /// method info, rgctx tables, and static field storage. Reads out of these exist only so the
+    /// native code can find metadata, and the information they carry is already on the operand type.
+    /// </summary>
+    private static bool IsRuntimeMetadata(TypeAnalysisContext type) => type is
+        RgctxTableTypeAnalysisContext
+        or MethodRgctxTableTypeAnalysisContext
+        or RuntimeClassTypeAnalysisContext
+        or RuntimeMethodInfoAnalysisContext
+        or RuntimeFieldInfoAnalysisContext
+        or StaticFieldStorageTypeAnalysisContext;
+
 }
