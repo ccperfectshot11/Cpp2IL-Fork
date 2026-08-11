@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Utils;
+using AssetRipper.Primitives;
 using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.Analysis;
@@ -11,13 +12,24 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public static class RgctxResolver
 {
+    /// <summary>
+    /// Unity 2021.2 added MethodInfo::virtualMethodPointer, shifting every field after it by one pointer.
+    /// </summary>
+    private static readonly UnityVersion UnityVersionWithVirtualMethodPointer = new(2021, 2);
+
     public static bool Run(MethodAnalysisContext method)
     {
         var is32Bit = method.AppContext.Binary.is32Bit;
-        var klassOffset = is32Bit ? 0x10 : 0x20;
         var rgctxOffset = is32Bit ? 0x60 : 0xC0;
-        var methodRgctxOffset = is32Bit ? 0x1C : 0x38; // MethodInfo::rgctx_data
         var pointerSize = is32Bit ? 4 : 8;
+
+        // MethodInfo starts with methodPointer, then virtualMethodPointer on Unity 2021.2 and later,
+        // then invoker_method, name, klass, return_type, parameters, rgctx_data. The extra pointer
+        // shifts everything after it, so hardcoding the later offsets silently breaks older games.
+        var hasVirtualMethodPointer = method.AppContext.UnityVersion >= UnityVersionWithVirtualMethodPointer;
+        var methodInfoShift = hasVirtualMethodPointer ? 1 : 0;
+        var klassOffset = (3 + methodInfoShift) * pointerSize;
+        var methodRgctxOffset = (6 + methodInfoShift) * pointerSize;
 
         var changed = false;
 
