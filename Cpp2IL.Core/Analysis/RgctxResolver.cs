@@ -138,6 +138,23 @@ public static class RgctxResolver
                     return new RuntimeClassTypeAnalysisContext(inflated, inflated.DeclaringAssembly);
                 }
 
+                // The runtime builds the array class from the element type stored in the entry. Some
+                // metadata versions store the array type itself, so an already-array type is kept as-is.
+                case Il2CppRGCTXDataType.IL2CPP_RGCTX_DATA_ARRAY:
+                {
+                    var stored = GenericInstantiation.Instantiate(appContext.ResolveIl2CppType(entry.Type), typeArguments, methodArguments);
+                    var arrayType = stored as SzArrayTypeAnalysisContext ?? new SzArrayTypeAnalysisContext(stored);
+                    return new RuntimeClassTypeAnalysisContext(arrayType, stored.DeclaringAssembly);
+                }
+
+                // Both carry a plain type index, so they resolve the same way as CLASS/TYPE.
+                case Il2CppRGCTXDataType.IL2CPP_RGCTX_DATA_CONSTRAINED
+                    or Il2CppRGCTXDataType.IL2CPP_RGCTX_DATA_FIELD_OFFSET_TYPE:
+                {
+                    var inflated = GenericInstantiation.Instantiate(appContext.ResolveIl2CppType(entry.Type), typeArguments, methodArguments);
+                    return new RuntimeClassTypeAnalysisContext(inflated, inflated.DeclaringAssembly);
+                }
+
                 case Il2CppRGCTXDataType.IL2CPP_RGCTX_DATA_METHOD:
                 {
                     var spec = entry.MethodSpec;
