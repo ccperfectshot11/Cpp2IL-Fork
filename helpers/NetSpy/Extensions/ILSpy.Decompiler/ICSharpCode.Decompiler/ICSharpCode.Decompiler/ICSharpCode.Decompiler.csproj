@@ -8,6 +8,7 @@
     <NoWarn>1685</NoWarn>
 
     <AssemblyTitle>ICSharpCode.Decompiler</AssemblyTitle>
+    <AssemblyName>ICSharpCode.Decompiler.NetSpy</AssemblyName>
     <Company>ic#code</Company>
     <Description>IL decompiler engine</Description>
     <Copyright>Copyright 2011-2014 AlphaSierraPapa for the SharpDevelop Team</Copyright>

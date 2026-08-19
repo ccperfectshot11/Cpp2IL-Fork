@@ -242,6 +242,15 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             case Mnemonic.Cvtdq2pd: // int to double
             case Mnemonic.Cvtpd2ps: // double to float
             case Mnemonic.Cvttsd2si: // same, but double to integer
+            case Mnemonic.Cvtsd2ss: // double to single
+            case Mnemonic.Cvtss2sd: // single to double
+            case Mnemonic.Cvttss2si: // single to integer (truncate)
+            case Mnemonic.Cvtss2si: // single to integer (round)
+            case Mnemonic.Cvtsd2si: // double to integer (round)
+            case Mnemonic.Cvtsi2ss: // integer to single
+            case Mnemonic.Cvtsi2sd: // integer to double
+            case Mnemonic.Cvttps2dq: // packed single to int (truncate)
+            case Mnemonic.Cvttpd2dq: // packed double to int (truncate)
             case Mnemonic.Movdqu: // DEST[127:0] := SRC[127:0]
                 Add(instruction.IP, ISIL.OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
@@ -633,7 +642,14 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 {
                     AddIndirectCall(instruction);
                 }
-                else if (context.AppContext.MethodsByAddress.TryGetValue(target, out var possibleMethods))
+                // An il2cpp API helper (box, array allocation, unbox, the cast helper, ...) frequently
+                // resolves through MethodsByAddress to a managed method that happens to live at that
+                // address, and the call is then lifted with THAT method's argument layout - which drops
+                // the arguments the helper actually takes, leaving the later key-function rewrites
+                // nothing to work with. Key functions are rewritten from their raw register arguments,
+                // so lift them as unmanaged calls and keep every argument register.
+                else if (!context.AppContext.GetOrCreateKeyFunctionAddresses().IsKeyFunctionAddress(target)
+                         && context.AppContext.MethodsByAddress.TryGetValue(target, out var possibleMethods))
                 {
                     if (possibleMethods.Count == 1)
                     {
@@ -716,8 +732,17 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 break;
             case Mnemonic.Comiss: //comiss is just a floating point compare dest[31:0] == src[31:0]
             case Mnemonic.Ucomiss: // same, but unsigned
-                AddCompareInstruction(instruction.IP, ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, true, context));
+            case Mnemonic.Comisd: // scalar double floating point compare dest[63:0] == src[63:0]
+            case Mnemonic.Ucomisd: // same, but unsigned
+            {
+                var single = instruction.Mnemonic is Mnemonic.Comiss or Mnemonic.Ucomiss;
+                var compareLeft = ConvertOperand(instruction, 0);
+                var compareRight = ConvertScalarFloatOperand(instruction, 1, single, context);
+
+                AddCompareInstruction(instruction.IP, compareLeft, compareRight);
+                AddUnorderedParity(instruction.IP, compareLeft, compareRight);
                 break;
+            }
 
             case Mnemonic.Cmove: // move if condition
             case Mnemonic.Cmovne:
@@ -948,6 +973,25 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                     break;
                 }
                 goto default;
+            case Mnemonic.Jp:
+                // After a floating point compare the parity flag means "unordered", which is how the
+                // compiler emits a NaN check. The comparison already computes PF.
+                if (instruction.Op0Kind != OpKind.Register)
+                {
+                    Add(instruction.IP, ISIL.OpCode.ConditionalJump, Imm(instruction.NearBranchTarget), new ISIL.Register(null, "PF")); // if PF == 1
+                    break;
+                }
+
+                goto default;
+            case Mnemonic.Jnp:
+                if (instruction.Op0Kind != OpKind.Register)
+                {
+                    Add(instruction.IP, ISIL.OpCode.Not, new ISIL.Register(null, "TEMP"), new ISIL.Register(null, "PF")); // TEMP = !PF
+                    Add(instruction.IP, ISIL.OpCode.ConditionalJump, Imm(instruction.NearBranchTarget), new ISIL.Register(null, "TEMP"));
+                    break;
+                }
+
+                goto default;
             case Mnemonic.Js:
                 if (instruction.Op0Kind != OpKind.Register)
                 {
@@ -1065,6 +1109,20 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             Add(ip, ISIL.OpCode.CheckEqual, new ISIL.Register(null, "ZF"), temp1, Imm(0)); // ZF = temp1 == 0
             Add(ip, ISIL.OpCode.And, temp5, temp2, Imm(1)); // temp5 = tmp2 & 1
             Add(ip, ISIL.OpCode.CheckEqual, new ISIL.Register(null, "PF"), temp5, Imm(0)); // PF = temp5 == 0
+        }
+
+        // For a floating point compare the parity flag means the operands were unordered, i.e. one of
+        // them is NaN - which is how a NaN test is compiled. AddCompareInstruction only computes the
+        // integer parity of the difference, so replace PF with the real test here. x != x holds only
+        // for NaN, so this needs no intrinsics and lowers to plain IL that runs on any runtime.
+        void AddUnorderedParity(ulong ip, ISIL.IOperand op0, ISIL.IOperand op1)
+        {
+            var leftIsNaN = new ISIL.Register(null, "TEMP6");
+            var rightIsNaN = new ISIL.Register(null, "TEMP7");
+
+            Add(ip, ISIL.OpCode.CheckNotEqual, leftIsNaN, op0, op0);
+            Add(ip, ISIL.OpCode.CheckNotEqual, rightIsNaN, op1, op1);
+            Add(ip, ISIL.OpCode.Or, new ISIL.Register(null, "PF"), leftIsNaN, rightIsNaN);
         }
 
         void AddTestInstruction(ulong ip, ISIL.IOperand op0, ISIL.IOperand op1)

@@ -1,23 +1,5 @@
-
-packages/
-
-\.idea/
-.vscode/
-
 bin/
 obj/
-
-.vs/
-
 *.user
-
-launchsettings.json
-
-artifacts/
-
-.DS_Store
-
-# helper build output
-helpers/**/bin/
-helpers/**/obj/
-helpers/**/0Bins/
+cpp2il_out/
+bodyscan-runs/*.log

@@ -221,6 +221,8 @@ public static class IlGenerator
             instructions.Add(CilOpCodes.Ldstr, Diagnostic("Warning: " + warning));
             instructions.Add(CilOpCodes.Call, writeLine);
         }
+
+        Analysis.DumpDiag.MaybeDump(context, definition);
     }
 
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
@@ -677,8 +679,21 @@ public static class IlGenerator
                 break;
             case ArrayLength arrayLength:
                 LoadLocal(arrayLength.Array, method, locals);
-                instructions.Add(CilOpCodes.Ldlen);
-                instructions.Add(CilOpCodes.Conv_I4);
+                if (arrayLength.Array.Type?.FullName == "System.Array")
+                {
+                    // ldlen requires a zero-based vector on the stack; the abstract System.Array base
+                    // (what a length read lands on when the element type is unknown) is not one, so use
+                    // its Length property instead, which is valid on any array.
+                    var arrayGetLength = module.CorLibTypeFactory.CorLibScope
+                        .CreateTypeReference("System", "Array")
+                        .CreateMemberReference("get_Length", MethodSignature.CreateInstance(module.CorLibTypeFactory.Int32));
+                    instructions.Add(CilOpCodes.Callvirt, arrayGetLength);
+                }
+                else
+                {
+                    instructions.Add(CilOpCodes.Ldlen);
+                    instructions.Add(CilOpCodes.Conv_I4);
+                }
                 break;
             case AddressOf { Target: LocalVariable addressed }:
                 instructions.Add(CilOpCodes.Ldloca, locals[addressed]);
@@ -734,6 +749,7 @@ public static class IlGenerator
                     break;
                 }
 
+                Analysis.MarkerDiag.Record(memory, method);
                 instructions.Add(CilOpCodes.Ldstr, Diagnostic("Unmanaged memory load: " + operand));
                 instructions.Add(CilOpCodes.Call, writeLine);
                 instructions.Add(CilOpCodes.Ldc_I4_0);

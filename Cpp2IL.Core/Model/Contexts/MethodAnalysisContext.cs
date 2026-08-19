@@ -406,11 +406,25 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, 
 
         InterfaceDispatchRecovery.Run(this);
 
+        // Turn leftover metadata-init calls into moves BEFORE the typing fixpoint. The value they
+        // return is the initialized Il2CppClass*/MethodInfo* that the surrounding code then reads
+        // through ([klass + staticFields], [klass + initFlag], the vtable, ...), so the move has to
+        // exist while types are being seeded - SeedRuntimeClassTypes turns "Move dest, typeUsage"
+        // into a RuntimeClass-typed local. Running this after the fixpoint, as it used to, left every
+        // one of those bases untyped and so every read through them unresolved.
+        MetadataInitGuardRemover.RewriteUnguardedInits(this);
+
         LocalVariables.ResolveTypesAndFields(this);
+
+        // Key-function rewrites that need resolved argument types (box, array allocation, as/is cast).
+        // Runs after the fixpoint but before SSA is destroyed, so class-pointer args are typed and a
+        // void call's return is still carried by ImplicitDefinition.
+        KeyFunctionRecovery.RunPostTyping(this);
 
         // Needs the MethodInfo* receivers typed, so runs after resolution unlike the class-init guards
         MetadataInitGuardRemover.RunRgctx(this);
 
+        // Anything the fixpoint newly exposed (a call resolved late can leave another init behind).
         MetadataInitGuardRemover.RewriteUnguardedInits(this);
 
         // Needs type resolved for delegate locals

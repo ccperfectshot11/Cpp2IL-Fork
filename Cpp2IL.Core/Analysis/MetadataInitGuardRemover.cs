@@ -30,16 +30,34 @@ public static class MetadataInitGuardRemover
     public static void Run(MethodAnalysisContext method)
         => Run(method.ControlFlowGraph!, method.AppContext.Binary.is32Bit ? InitialisedFlagOffset32 : InitialisedFlagOffset64);
 
-    // Rewrite any metadata init calls we didn't remove into movs.
+    // Rewrite any metadata init calls we didn't remove into movs. These are usually CallVoid (the
+    // return - the initialized metadata pointer - is carried by ImplicitDefinition, not a result
+    // operand), which the old Call-only form missed, leaving each as an "unknown call target" marker.
     public static void RewriteUnguardedInits(MethodAnalysisContext method)
     {
         foreach (var instruction in method.ControlFlowGraph!.Instructions)
         {
-            if (instruction.OpCode != OpCode.Call || instruction.Operands is not [StringLiteral { Value: InitializeRuntimeMetadata or InitializeMethod }, var result, var handle, ..])
+            if (instruction.Operands is not [StringLiteral { Value: InitializeRuntimeMetadata or InitializeMethod }, ..])
+                continue;
+
+            IOperand? result, handle;
+            if (instruction.OpCode == OpCode.Call && instruction.Operands.Count >= 3)
+            {
+                result = instruction.Operands[1];
+                handle = instruction.Operands[2];
+            }
+            else if (instruction.OpCode == OpCode.CallVoid && instruction.Operands.Count >= 2
+                     && KeyFunctionRecovery.ImplicitResultLocal(instruction, method) is { } implicitResult)
+            {
+                result = implicitResult;
+                handle = instruction.Operands[1];
+            }
+            else
                 continue;
 
             instruction.OpCode = OpCode.Move;
             instruction.SetOperands(result, handle);
+            instruction.ImplicitDefinition = null;
         }
     }
     

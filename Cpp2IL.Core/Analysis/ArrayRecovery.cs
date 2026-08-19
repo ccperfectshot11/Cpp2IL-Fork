@@ -22,6 +22,11 @@ public static class ArrayRecovery
     private static long LengthOffset(int pointerSize) => 3L * pointerSize;
     private static long ElementsOffset(int pointerSize) => 4L * pointerSize;
 
+    // Any array reference carries the length field: a concrete T[], or the abstract System.Array base
+    // that a local ends up typed as when the element type could not be pinned down.
+    private static bool IsArrayLike(TypeAnalysisContext? type) =>
+        type is SzArrayTypeAnalysisContext || type?.FullName is "System.Array";
+
     public static void Run(MethodAnalysisContext method)
     {
         RecoverAccesses(method);
@@ -40,17 +45,33 @@ public static class ArrayRecovery
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
                 if (instruction.Operands[i] is not MemoryOperand memory
-                    || memory.Base is not LocalVariable { Type: SzArrayTypeAnalysisContext arrayType } array)
+                    || memory.Base is not LocalVariable array)
                     continue;
 
-                if (memory.Index == null && memory.Scale == 0 && memory.Addend == LengthOffset(pointerSize))
+                // Array length lives at [array + 3*ptr] and reads the same for every element type, so
+                // recover it for any array-typed base - including the abstract System.Array base class,
+                // which type propagation often leaves on a local whose exact element type it could not
+                // determine. (Element access below still needs the concrete SzArray element type.)
+                if (memory.Index == null && memory.Scale == 0 && memory.Addend == LengthOffset(pointerSize)
+                    && IsArrayLike(array.Type))
                 {
                     instruction.SetOperand(i, new ArrayLength(array));
                     continue;
                 }
 
-                if (ElementIndex(memory, arrayType, pointerSize) is { } index)
+                if (array.Type is SzArrayTypeAnalysisContext arrayType && ElementIndex(memory, arrayType, pointerSize) is { } index)
+                {
                     instruction.SetOperand(i, new ArrayAccess(array, index));
+                    continue;
+                }
+
+                // For a byte-sized element the index scale is 1, so base and index are interchangeable
+                // in the address, and the disassembler often parks the array in the index slot with the
+                // real index as the base: [realIndex + elementsOffset + array*1]. Recover that shape too.
+                if (memory.Index is LocalVariable { Type: SzArrayTypeAnalysisContext byteArrayType } byteArray
+                    && memory.Scale <= 1 && memory.Addend == ElementsOffset(pointerSize)
+                    && ElementSize(byteArrayType.ElementType, pointerSize) == 1)
+                    instruction.SetOperand(i, new ArrayAccess(byteArray, array));
             }
         }
     }

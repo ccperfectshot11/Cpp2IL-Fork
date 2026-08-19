@@ -11,6 +11,65 @@ using LibCpp2IL;
 
 namespace Cpp2IL.Core.Analysis;
 
+// Diagnostic-only (env CPP2IL_FIELDDIAG=1): tallies why a typed-base [local+offset] memory operand
+// did or did not resolve to a field, so the biggest field-lookup gap can be found. Zero cost when off.
+internal static class FieldDiag
+{
+    public static readonly bool Enabled = System.Environment.GetEnvironmentVariable("CPP2IL_FIELDDIAG") == "1";
+    private static long _candidates, _resolved, _failValueTypeBase, _failBeyondLayout, _failNoExactMatch, _failGenericVt;
+    private static int _hooked;
+
+    private static void EnsureDump()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _hooked, 1) == 0)
+            System.AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                System.Console.WriteLine("==== FIELD-OFFSET DIAG (typed-base [local+offset]) ====");
+                System.Console.WriteLine($"  candidates            : {_candidates}");
+                System.Console.WriteLine($"  resolved -> ldfld     : {_resolved}");
+                System.Console.WriteLine($"  FAIL value-type base  : {_failValueTypeBase}");
+                System.Console.WriteLine($"  FAIL beyond layout    : {_failBeyondLayout}");
+                System.Console.WriteLine($"  FAIL no exact match   : {_failNoExactMatch}");
+                System.Console.WriteLine($"  FAIL generic vt skip  : {_failGenericVt}");
+                System.Console.WriteLine("  -- delta to nearest lower field (0x1000 = >0x200 / beyond layout) --");
+                foreach (var kv in DeltaToNearestField.OrderByDescending(k => k.Value).Take(20))
+                    System.Console.WriteLine($"     delta 0x{kv.Key:X4} : {kv.Value}");
+            };
+    }
+
+    public static void Candidate() { if (!Enabled) return; EnsureDump(); System.Threading.Interlocked.Increment(ref _candidates); }
+    public static void Resolved() { if (!Enabled) return; System.Threading.Interlocked.Increment(ref _resolved); }
+    public static void GenericVtSkip() { if (!Enabled) return; System.Threading.Interlocked.Increment(ref _failGenericVt); }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> DeltaToNearestField = new();
+
+    public static void Failure(TypeAnalysisContext owner, long addend)
+    {
+        if (!Enabled) return;
+        if (owner.IsValueType) { System.Threading.Interlocked.Increment(ref _failValueTypeBase); return; }
+
+        long maxOffset = -1;
+        long nearestBelow = -1;
+        for (var t = owner; t != null; t = t.BaseType)
+            foreach (var f in t.Fields)
+                if (!f.IsStatic && f.BackingData is { } bd)
+                {
+                    if (bd.FieldOffset > maxOffset) maxOffset = bd.FieldOffset;
+                    if (bd.FieldOffset <= addend && bd.FieldOffset > nearestBelow) nearestBelow = bd.FieldOffset;
+                }
+
+        // Delta from the accessed offset down to the closest real field. 0 would be an exact hit (so
+        // it never reaches here); a constant delta of 0x10 is the object header; small varying positive
+        // deltas are unpadded inherited fields; a huge delta means the offset is past the whole layout.
+        var delta = nearestBelow < 0 ? -1 : addend - nearestBelow;
+        var bucket = delta < 0 ? -1 : delta > 0x200 ? 0x1000 : delta;
+        DeltaToNearestField.AddOrUpdate(bucket, 1, (_, v) => v + 1);
+
+        if (addend > maxOffset) System.Threading.Interlocked.Increment(ref _failBeyondLayout);
+        else System.Threading.Interlocked.Increment(ref _failNoExactMatch);
+    }
+}
+
 public static class MetadataResolver
 {
     public static void ResolveAll(MethodAnalysisContext method)
@@ -153,7 +212,30 @@ public static class MetadataResolver
                 // check if static field access
                 var staticOwner = (local.Type as StaticFieldStorageTypeAnalysisContext)?.OwnerType;
                 var owner = staticOwner ?? local.Type;
+
+                // A managed pointer to a struct addresses the UNBOXED value, whose offsets start at 0,
+                // while il2cpp metadata measures field offsets from the boxed form - confirmed in the
+                // runtime source (vm/Object.cpp): Unbox(obj) == obj + sizeof(Il2CppObject), and boxing
+                // writes at field.offset - sizeof(Il2CppObject). So for a byref-to-struct base the
+                // search offset needs the header added back.
+                //
+                // Only an explicit byref qualifies. A local typed as the value type itself is
+                // ambiguous - it may hold a BOXED instance, which is addressed with the raw metadata
+                // offset - and shifting those regresses badly, so they keep the existing behaviour.
+                // Byref bases, meanwhile, resolve against the byref type today and so never match a
+                // field at all, which makes this pure gain for them.
+                var byRefStruct = staticOwner == null
+                    && owner is ByRefTypeAnalysisContext { ElementType: { IsValueType: true } referentStruct }
+                    ? referentStruct
+                    : null;
+
+                if (byRefStruct != null)
+                    owner = byRefStruct;
+
+                var searchAddend = byRefStruct != null ? memory.Addend + ValueTypeHeaderSize : memory.Addend;
+
                 var genericOwner = owner as GenericInstanceTypeAnalysisContext;
+                FieldDiag.Candidate();
 
                 FieldAnalysisContext? field;
                 if (genericOwner != null && staticOwner == null)
@@ -161,13 +243,16 @@ public static class MetadataResolver
                     // metadata has all-0 offsets for generic definitions, so recompute layout
                     // TODO support user-defined value types
                     if (genericOwner.GenericArguments.Any(a => a.IsValueType))
+                    {
+                        FieldDiag.GenericVtSkip();
                         continue;
+                    }
 
                     field = GenericInstanceFieldLayout.FindFieldAtOffset(genericOwner.GenericType, memory.Addend);
                 }
                 else if (staticOwner == null && owner.GenericParameters.Count > 0)
                 {
-                    field = GenericInstanceFieldLayout.FindFieldAtOffset(owner, memory.Addend);
+                    field = GenericInstanceFieldLayout.FindFieldAtOffset(owner, searchAddend);
                 }
                 else
                 {
@@ -177,7 +262,7 @@ public static class MetadataResolver
                     for (var candidateOwner = genericOwner?.GenericType ?? owner; candidateOwner != null && field == null; candidateOwner = candidateOwner.BaseType)
                         field = candidateOwner.Fields.FirstOrDefault(f => f.IsStatic == (staticOwner != null)
                             && (f.Attributes & FieldAttributes.Literal) == 0 // consts have no storage but their metadata offset is 0, which would match
-                            && f.BackingData?.FieldOffset == memory.Addend);
+                            && f.BackingData?.FieldOffset == searchAddend);
                 }
 
                 FieldAnalysisContext[]? innerPath = null;
@@ -187,8 +272,11 @@ public static class MetadataResolver
                     // The offset can land inside a value-type field, which means the source was a nested
                     // access such as a.b.c. Walk into the containing field and keep going until the
                     // remaining offset lands exactly on a field.
-                    if (ResolveNestedField(owner, memory.Addend, staticOwner != null) is not { } nested)
+                    if (ResolveNestedField(owner, searchAddend, staticOwner != null) is not { } nested)
+                    {
+                        FieldDiag.Failure(owner, searchAddend);
                         continue;
+                    }
 
                     field = nested.Outer;
                     innerPath = nested.Path;
@@ -200,6 +288,7 @@ public static class MetadataResolver
 
                 instruction.SetOperand(i, new FieldReference(field, local, (int)memory.Addend, innerPath));
                 changed = true;
+                FieldDiag.Resolved();
             }
         }
 
@@ -624,6 +713,56 @@ public static class MetadataResolver
             LocalVariable local when loads.TryGetValue(local, out var load) => load,
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Resolves a call made through a MethodInfo*. The runtime struct begins with the method's native
+    /// entry point (MethodInfo::methodPointer at offset 0 - see the il2cpp runtime source), so calling
+    /// through [methodInfo] is just a call to the method that MethodInfo names, which metadata-usage
+    /// resolution has already attached to the local as its type. Runs inside the type/field fixpoint,
+    /// so it re-fires as more locals become MethodInfo-typed.
+    /// </summary>
+    public static bool ResolveMethodInfoCalls(MethodAnalysisContext method)
+    {
+        var loads = new Dictionary<LocalVariable, MemoryOperand>();
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction is { OpCode: OpCode.Move, Operands: [LocalVariable destination, MemoryOperand { Index: null, Scale: 0 } load] })
+                loads[destination] = load;
+        }
+
+        var changed = false;
+
+        foreach (var instruction in method.ControlFlowGraph.Instructions)
+        {
+            if (instruction.OpCode != OpCode.IndirectCall)
+                continue;
+
+            if (CalledThroughMethodInfo(instruction.Operands[0], 0) is not { } resolved)
+                continue;
+
+            // IndirectCall already has the Call operand layout, so only the target changes.
+            instruction.OpCode = OpCode.Call;
+            instruction.SetOperand(0, resolved);
+            resolved.AppContext.InstructionSet.CallingConventionResolver?.RemapRawArguments(instruction, resolved);
+            changed = true;
+        }
+
+        return changed;
+
+        MethodAnalysisContext? CalledThroughMethodInfo(IOperand operand, int depth)
+        {
+            if (depth > 4)
+                return null;
+
+            return operand switch
+            {
+                MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable { Type: RuntimeMethodInfoAnalysisContext { RepresentedMethod: { } represented } } } => represented,
+                LocalVariable { Type: RuntimeMethodInfoAnalysisContext { RepresentedMethod: { } direct } } => direct,
+                LocalVariable local when loads.TryGetValue(local, out var load) => CalledThroughMethodInfo(load, depth + 1),
+                _ => null,
+            };
+        }
     }
 
     private static MethodAnalysisContext? ResolveVTableSlot(ApplicationAnalysisContext appContext, TypeAnalysisContext type, int slot)

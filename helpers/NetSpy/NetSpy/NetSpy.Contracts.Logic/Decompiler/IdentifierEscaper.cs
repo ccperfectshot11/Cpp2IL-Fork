@@ -77,12 +77,15 @@ namespace NetSpy.Contracts.Decompiler {
 			if (string2.IsNullOrEmpty(id))
 				return EMPTY_NAME;
 
+			// C# identifiers cannot start with a digit; compiler-generated hash names do.
+			bool leadingDigit = id[0] >= '0' && id[0] <= '9';
+
 			// Common case is a valid string
 			int i = 0;
 			if (id.Length <= maxLength) {
 				for (; ; i++) {
 					if (i >= id.Length)
-						return id;
+						return leadingDigit ? "_" + id : id;
 					if (!IsValidChar(id[i], allowSpaces))
 						break;
 				}
@@ -90,6 +93,8 @@ namespace NetSpy.Contracts.Decompiler {
 
 			// Here if obfuscated or weird string
 			var sb = new StringBuilder(id.Length + 10);
+			if (leadingDigit)
+				sb.Append('_');
 			if (i != 0)
 				sb.Append(id, 0, i);
 
@@ -100,7 +105,8 @@ namespace NetSpy.Contracts.Decompiler {
 					// iterator/async state machine "<Method>d__1" and "<>4__this"). They're
 					// invalid in C# identifiers, so map them to '_' to keep the output
 					// buildable. Do it consistently so declarations and uses still match.
-					if (c == '<' || c == '>')
+					// Any invalid ASCII char ('<', '>', '$', '`', '|', ...) -> '_', consistently.
+					if (c < 0x80)
 						sb.Append('_');
 					else {
 						sb.Append(@"\u");
@@ -124,12 +130,14 @@ namespace NetSpy.Contracts.Decompiler {
 		static bool IsValidChar(char c, bool allowSpaces) {
 			// NetSpy: '<' and '>' are printable ASCII but invalid in C# identifiers; force
 			// them through the escaping path so compiler-generated names stay buildable.
-			if (c == '<' || c == '>')
-				return false;
-			if (0x21 <= c && c <= 0x7E)
-				return true;
-			if (c <= 0x20)
+			// ASCII: only [A-Za-z0-9_] are valid in C# identifiers. Everything else in the
+			// ASCII range ('<', '>', '$', '`', '|', '!', ...) is invalid and gets escaped so
+			// compiler-generated names stay buildable.
+			if (c < 0x80) {
+				if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')
+					return true;
 				return c == ' ' && allowSpaces;
+			}
 
 			switch (char.GetUnicodeCategory(c)) {
 			case UnicodeCategory.UppercaseLetter:

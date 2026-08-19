@@ -16,6 +16,7 @@ public class StackAnalyzer
         public StackState Copy() => new() { Size = this.Size };
     }
 
+    private static int _stackDiagCount;
     private Dictionary<Block, StackState> _inComingState = [];
     private Dictionary<Block, StackState> _outGoingState = [];
     private Dictionary<Instruction, StackState> _instructionState = [];
@@ -58,7 +59,11 @@ public class StackAnalyzer
     {
         var aliases = new Dictionary<string, int>();
 
-        foreach (var instruction in graph.EntryBlock.Successors.SelectMany(b => b.Instructions))
+        // The frame-pointer setup (mov rbp, rsp) usually lives in the prologue - the entry block
+        // itself - so scanning only its successors, as this used to, missed it entirely and left
+        // every rbp-relative access as an unresolved memory load. Scan the entry block too.
+        var prologue = new[] { graph.EntryBlock }.Concat(graph.EntryBlock.Successors);
+        foreach (var instruction in prologue.SelectMany(b => b.Instructions))
         {
             if (instruction is { OpCode: OpCode.Move, Operands: [Register destination, Register { Name: "rsp" }] }
                 && _instructionState.TryGetValue(instruction, out var atCopy))

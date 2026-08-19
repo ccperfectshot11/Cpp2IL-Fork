@@ -98,10 +98,15 @@ public static class LocalVariables
                 thisLocal.IsThis = true;
                 paramLocals.Add(thisLocal);
             }
-            else
+            else if (method.Locals.Any(l => l.Register.Number == thisOperand.Number))
             {
+                // The receiver register is used, but not at its entry version, so the value we would
+                // have called 'this' was overwritten before any read - worth reporting.
                 method.AddWarning($"'this' local not found (operand: {thisOperand})");
             }
+            // Otherwise the register is never referenced at all: the method simply does not use
+            // 'this', so there is no local to name and nothing was lost. Reporting that as an
+            // analysis warning put a spurious marker in every such body.
         }
 
         // Check if method has MethodInfo*
@@ -245,6 +250,11 @@ public static class LocalVariables
         // lets a field offset resolve, a field load types its result, and any of those can be the
         // receiver/base of the next step. Every pass is monotonic - it only resolves an operand or
         // fills a previously-unknown type - so the loop converges.
+        // Locals that are dereferenced anywhere hold addresses, so numeric propagation must not
+        // claim them (see DereferencedLocals). Computed once: the set only ever shrinks in meaning as
+        // memory operands become field references, so using the initial, wider set stays conservative.
+        var addressed = DereferencedLocals(method);
+
         var changed = true;
         var loopCount = 0;
 
@@ -257,12 +267,13 @@ public static class LocalVariables
             changed |= MetadataResolver.ResolveCallsViaMethodInfo(method);
             changed |= MetadataResolver.ResolveAmbiguousCalls(method);
             changed |= MetadataResolver.ResolveVirtualCalls(method);
+            changed |= MetadataResolver.ResolveMethodInfoCalls(method);
             changed |= PropagateFromCallParameters(method);
             changed |= MetadataResolver.ResolveFieldOffsets(method);
             changed |= RgctxResolver.Run(method);
             changed |= PropagateStaticFieldStorage(method);
             changed |= TypeAddressedLocals(method);
-            changed |= PropagateTypesOnce(method);
+            changed |= PropagateTypesOnce(method, addressed);
         }
     }
 
@@ -410,7 +421,7 @@ public static class LocalVariables
     }
 
     // A single propagation sweep over every move and phi. Returns whether it filled in any type.
-    private static bool PropagateTypesOnce(MethodAnalysisContext method)
+    private static bool PropagateTypesOnce(MethodAnalysisContext method, HashSet<LocalVariable> addressed)
     {
         var changed = false;
 
@@ -425,19 +436,39 @@ public static class LocalVariables
                     changed |= PropagatePhi(instruction);
                     break;
                 case OpCode.Add or OpCode.Subtract or OpCode.Multiply:
-                    changed |= PropagateArithmetic(instruction, method);
+                    changed |= PropagateArithmetic(instruction, method, addressed);
                     break;
                 case OpCode.Divide or OpCode.Modulo:
-                    changed |= PropagateArithmetic(instruction, method) || PropagateIntegerResult(instruction, method);
+                    changed |= PropagateArithmetic(instruction, method, addressed) || PropagateIntegerResult(instruction, method, addressed);
                     break;
                 case OpCode.And or OpCode.Or or OpCode.Xor or OpCode.Not or OpCode.Negate
                     or OpCode.ShiftLeft or OpCode.ShiftRight:
-                    changed |= PropagateIntegerResult(instruction, method);
+                    changed |= PropagateIntegerResult(instruction, method, addressed);
                     break;
             }
         }
 
         return changed;
+    }
+
+    /// <summary>
+    /// Locals that are dereferenced somewhere in the method - used as the base of a memory operand.
+    /// Such a local holds an address, so giving it a numeric type is always wrong, and because
+    /// propagation is monotonic that wrong type would then be permanent: every field read through it
+    /// would look for an offset in (say) System.Int32's layout and never resolve. Arithmetic on a
+    /// pointer is address arithmetic, so those passes skip these locals and leave them untyped for a
+    /// pass that can type them properly.
+    /// </summary>
+    private static HashSet<LocalVariable> DereferencedLocals(MethodAnalysisContext method)
+    {
+        var addressed = new HashSet<LocalVariable>();
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        foreach (var operand in instruction.Operands)
+            if (operand is MemoryOperand { Base: LocalVariable baseLocal })
+                addressed.Add(baseLocal);
+
+        return addressed;
     }
 
     // A local assigned a float/double literal (a lifted rodata constant load) is that float type
@@ -458,9 +489,12 @@ public static class LocalVariables
     }
 
     // Arithmetic on a float operand is float arithmetic, so the result is that float type.
-    private static bool PropagateArithmetic(Instruction instruction, MethodAnalysisContext method)
+    private static bool PropagateArithmetic(Instruction instruction, MethodAnalysisContext method, HashSet<LocalVariable> addressed)
     {
         if (instruction.Operands is not [LocalVariable { Type: null } destination, var left, var right])
+            return false;
+
+        if (addressed.Contains(destination))
             return false;
 
         if ((FloatOperandType(left, method) ?? FloatOperandType(right, method)) is not { } floatType)
@@ -470,9 +504,12 @@ public static class LocalVariables
     }
 
     // An integer operand makes the result an integer. Excludes bool operands so flag logic stays boolean.
-    private static bool PropagateIntegerResult(Instruction instruction, MethodAnalysisContext method)
+    private static bool PropagateIntegerResult(Instruction instruction, MethodAnalysisContext method, HashSet<LocalVariable> addressed)
     {
         if (instruction.Operands[0] is not LocalVariable { Type: null } destination)
+            return false;
+
+        if (addressed.Contains(destination))
             return false;
 
         for (var i = 1; i < instruction.Operands.Count; i++)

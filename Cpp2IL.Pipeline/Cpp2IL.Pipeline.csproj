@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Cpp2IL.Pipeline</RootNamespace>
+    <AssemblyName>Cpp2IL.Pipeline</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Force the higher AssetRipper.CIL to resolve the NU1605 diamond across AssetRipper projects -->
+    <PackageReference Include="AssetRipper.CIL" Version="1.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cpp2IL.Core\Cpp2IL.Core.csproj" />
+    <ProjectReference Include="..\helpers\NetSpy\Extensions\ILSpy.Decompiler\ICSharpCode.Decompiler\ICSharpCode.Decompiler\ICSharpCode.Decompiler.csproj" />
+    <ProjectReference Include="..\helpers\AssetRipper\Source\AssetRipper.Export.UnityProjects\AssetRipper.Export.UnityProjects.csproj" />
+  </ItemGroup>
+
+</Project>
