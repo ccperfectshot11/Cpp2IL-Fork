@@ -137,12 +137,28 @@ internal static class Program
         byte[] bytes;
         try { bytes = File.ReadAllBytes(dll); } catch { return; }
 
-        var files = new List<(string path, string code)>();
+        // Reference ALL DLLs, this one included: cross-references to types in OTHER batches resolve
+        // from the own-DLL metadata, while the source types shadow their metadata twins (CS0436, a
+        // warning we ignore). This lets a huge assembly compile in memory-bounded batches instead of
+        // binding all its methods at once - which spiked to ~9 GB and could take the machine down.
+        var refs = _refCache.Values.ToList();
+
+        // STREAM: decompile straight into a batch buffer and compile+release each batch as it fills,
+        // so even mscorlib (thousands of types) never holds more than one batch of source in memory.
+        var batch = new List<SyntaxTree>(BatchSize);
+        void Flush()
+        {
+            if (batch.Count == 0) return;
+            try { CompileBatch(batch, refs); }
+            catch (OutOfMemoryException) { Interlocked.Increment(ref oomBatches); }
+            batch.Clear();
+            GC.Collect();
+        }
+
         try
         {
             NetSpyDecompiler.DecompileAssembly(bytes, (rel, code) =>
             {
-                files.Add((rel, code));
                 Interlocked.Increment(ref typesTotal);
                 var failed = code.Contains("// NetSpy decompile failed");
                 var nativ = code.Contains("NativeMethod_0x");
@@ -153,27 +169,13 @@ internal static class Program
                 if (marker) Interlocked.Increment(ref typesMarker);
                 if (gotoo) Interlocked.Increment(ref typesGoto);
                 if (!failed && !nativ && !marker && !gotoo) Interlocked.Increment(ref typesClean);
+
+                batch.Add(CSharpSyntaxTree.ParseText(code, ParseOpts, path: rel));
+                if (batch.Count >= BatchSize) Flush();
             });
+            Flush();
         }
-        catch { Interlocked.Increment(ref asmDecompileErrors); return; }
-        if (files.Count == 0) return;
-
-        var trees = files.Select(f => CSharpSyntaxTree.ParseText(f.code, ParseOpts, path: f.path)).ToList();
-        files.Clear(); // free the decompiled source strings; the trees hold what we still need
-
-        // Reference ALL DLLs, this one included: cross-references to types in OTHER batches resolve
-        // from the own-DLL metadata, while the source types shadow their metadata twins (CS0436, a
-        // warning we ignore). This lets a huge assembly compile in memory-bounded batches instead of
-        // binding all 16k methods at once - which spiked to ~9 GB and could take the machine down.
-        var refs = _refCache.Values.ToList();
-
-        for (var start = 0; start < trees.Count; start += BatchSize)
-        {
-            var batch = trees.GetRange(start, Math.Min(BatchSize, trees.Count - start));
-            try { CompileBatch(batch, refs); }
-            catch (OutOfMemoryException) { Interlocked.Increment(ref oomBatches); }
-            GC.Collect();
-        }
+        catch { Interlocked.Increment(ref asmDecompileErrors); }
     }
 
     private const int BatchSize = 800;

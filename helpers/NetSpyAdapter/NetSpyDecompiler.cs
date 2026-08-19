@@ -102,9 +102,12 @@ namespace NetSpyAdapter
             code = RefArithmetic.Replace(code, "default");
             // 3) Any remaining "(ref local)" used as a value -> placeholder.
             code = RefValue.Replace(code, "default");
-            // 4) [AttributeUsage(64, ...)] -> [AttributeUsage((AttributeTargets)64, ...)] so the injected
-            //    attributes compile and their AllowMultiple is honored (kills the CS0579 duplicates).
-            code = AttributeUsageEnum.Replace(code, "$1(AttributeTargets)$2");
+            // 4) [AttributeUsage(64, ...)] -> [AttributeUsage(AttributeTargets.All, ...)]. The bare int
+            //    does not compile (disabling AllowMultiple -> CS0579 on duplicate [Calls]). We widen the
+            //    target to All rather than cast the exact value: these injected attributes are just
+            //    metadata, and a narrow target (e.g. Method-only) turns every misapplied injected
+            //    attribute into a CS0592 once it starts being enforced.
+            code = AttributeUsageEnum.Replace(code, "${1}AttributeTargets.All");
             // 5) An injected Cpp2ILInjected attribute class with no [AttributeUsage] -> give it a
             //    permissive one so multiple applications on one member don't become CS0579.
             if (code.Contains("namespace Cpp2ILInjected") && code.Contains(": Attribute") && !code.Contains("AttributeUsage"))
