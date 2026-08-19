@@ -406,7 +406,10 @@ public static class IlGenerator
                 if (instruction.Operands[0] is not MethodAnalysisContext targetMethod)
                 {
                     if (instruction.Operands[0] is Immediate targetAddress)
+                    {
+                        Analysis.MarkerDiag.RecordMnf(targetAddress.UnsignedValue, context.AppContext, instruction.OpCode == OpCode.CallVoid);
                         instructions.Add(CilOpCodes.Ldstr, $"Method not found @{targetAddress.UnsignedValue:X}");
+                    }
                     else // Probably key function. Just the target, the full operand dump is huge and blows the 16MB #US heap limit
                         instructions.Add(CilOpCodes.Ldstr, Diagnostic($"Unknown call target operand: {instruction.Operands[0]}"));
 

@@ -37,6 +37,13 @@ internal static class MarkerDiag
     // Unmanaged markers if this bucket is fixed" and dumped to JSON for the BodyScan all-category join.
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> PerMethod = new();
 
+    // Method-not-found (Immediate call target) classification, to locate the regression: per target
+    // address, is it flagged as a key function (Fix E territory), how many managed candidates does
+    // MethodsByAddress hold, and which named key function (if any) does it map to.
+    private static readonly ConcurrentDictionary<ulong, long> MnfCount = new();
+    private static readonly ConcurrentDictionary<ulong, long> MnfVoidCount = new();   // of those, how many are CallVoid (return unused -> safe to elide)
+    private static readonly ConcurrentDictionary<ulong, (bool isKey, string name, int cands, int dethunkCands, ulong dethunkTarget)> MnfClass = new();
+
     private static int _hooked;
 
     private static void Bump(string bucket, string methodKey)
@@ -94,6 +101,8 @@ internal static class MarkerDiag
             });
             Console.WriteLine($"     {b,-28}: markers={markers,-7} methods_fully_unmanaged_clean={methodsCleaned}");
         }
+
+        DumpMnf();
 
         try
         {
@@ -185,6 +194,103 @@ internal static class MarkerDiag
         var delta = nearestBelow < 0 ? -1 : memory.Addend - nearestBelow;
         var dkey = delta < 0 ? -1 : delta > 0x200 ? 0x1000 : delta;
         DeltaBucket.AddOrUpdate(dkey, 1, (_, v) => v + 1);
+    }
+
+    // Called once at each "Method not found @addr" emission in IlGenerator. Classifies the target.
+    // isVoid = the call had no result operand (CallVoid): its return is unused, so if the target is a
+    // pure runtime helper (metadata/class init, write barrier) the whole call can be safely elided.
+    public static void RecordMnf(ulong addr, ApplicationAnalysisContext app, bool isVoid)
+    {
+        if (!Enabled) return;
+        Hook();
+        DumpKeyFunctionsOnce(app);
+        MnfCount.AddOrUpdate(addr, 1, (_, v) => v + 1);
+        if (isVoid) MnfVoidCount.AddOrUpdate(addr, 1, (_, v) => v + 1);
+        if (!MnfClass.ContainsKey(addr))
+        {
+            bool isKey = false; string name = ""; int cands = 0; int dethunkCands = 0; ulong dethunkTarget = 0;
+            try
+            {
+                var kf = app.GetOrCreateKeyFunctionAddresses();
+                isKey = kf.IsKeyFunctionAddress(addr);
+                name = kf.Pairs.Where(p => p.Value == addr).Select(p => p.Key).FirstOrDefault() ?? "";
+            }
+            catch { }
+            if (app.MethodsByAddress.TryGetValue(addr, out var l)) cands = l.Count;
+            // If the address is not a managed method, follow it as a jmp thunk and see whether the
+            // TARGET is a managed method. This measures the yield of de-thunking call targets.
+            if (cands == 0)
+            {
+                try
+                {
+                    dethunkTarget = app.InstructionSet.GetThunkTarget(app, addr);
+                    if (dethunkTarget != 0 && app.MethodsByAddress.TryGetValue(dethunkTarget, out var tl))
+                        dethunkCands = tl.Count;
+                }
+                catch { }
+            }
+            MnfClass[addr] = (isKey, name, cands, dethunkCands, dethunkTarget);
+        }
+    }
+
+    private static int _kfDumped;
+    private static void DumpKeyFunctionsOnce(ApplicationAnalysisContext app)
+    {
+        if (System.Threading.Interlocked.Exchange(ref _kfDumped, 1) != 0) return;
+        try
+        {
+            var kf = app.GetOrCreateKeyFunctionAddresses();
+            var pairs = kf.Pairs.OrderBy(p => p.Value).ToList();
+            Console.WriteLine($"==== DETECTED KEY FUNCTIONS: {pairs.Count(p => p.Value != 0)} found / {pairs.Count} total ====");
+            foreach (var p in pairs)
+                Console.WriteLine($"    {(p.Value == 0 ? "MISSING" : $"0x{p.Value:X}"),-14} {p.Key}");
+        }
+        catch (Exception e) { Console.WriteLine($"  (key-function dump failed: {e.Message})"); }
+    }
+
+    public static void DumpMnf()
+    {
+        if (MnfCount.Count == 0) return;
+        (bool isKey, string name, int cands, int dethunkCands, ulong dethunkTarget) Def = (false, "", 0, 0, 0UL);
+        long total = MnfCount.Values.Sum();
+        long keyM = 0, multiM = 0, singleM = 0, noneM = 0;
+        long dethunkResolvable = 0, dethunkSingle = 0;   // cands==0 markers recoverable by following the jmp thunk
+        foreach (var kv in MnfCount)
+        {
+            var cl = MnfClass.TryGetValue(kv.Key, out var c) ? c : Def;
+            if (cl.isKey) keyM += kv.Value;
+            else if (cl.cands >= 2) multiM += kv.Value;
+            else if (cl.cands == 1) singleM += kv.Value;
+            else
+            {
+                noneM += kv.Value;
+                if (cl.dethunkCands >= 1) { dethunkResolvable += kv.Value; if (cl.dethunkCands == 1) dethunkSingle += kv.Value; }
+            }
+        }
+        long noneVoid = 0, noneNonVoid = 0;
+        foreach (var kv in MnfCount)
+        {
+            var cl = MnfClass.TryGetValue(kv.Key, out var c) ? c : Def;
+            if (cl.isKey || cl.cands >= 1) continue;      // only the cands==0 runtime-helper bucket
+            var v = MnfVoidCount.TryGetValue(kv.Key, out var vc) ? vc : 0;
+            noneVoid += v; noneNonVoid += kv.Value - v;
+        }
+        Console.WriteLine("==== METHOD-NOT-FOUND CLASSIFICATION ====");
+        Console.WriteLine($"  total MNF markers      : {total}  over {MnfCount.Count} distinct targets");
+        Console.WriteLine($"  isKeyFunctionAddress   : {keyM}   <- Fix E territory (key-func skipped managed binding)");
+        Console.WriteLine($"  MethodsByAddress >=2   : {multiM}   <- multi-candidate (deferred to fixpoint)");
+        Console.WriteLine($"  MethodsByAddress ==1   : {singleM}   <- single managed candidate, still unresolved");
+        Console.WriteLine($"  MethodsByAddress ==0   : {noneM}   <- unknown / thunk / native (runtime helpers)");
+        Console.WriteLine($"     of those: CallVoid (return unused, SAFE-ELIDE) : {noneVoid}    Call (return USED, needs modelling) : {noneNonVoid}");
+        Console.WriteLine($"     of those, DE-THUNK to a managed method : {dethunkResolvable}   (single candidate: {dethunkSingle})");
+        Console.WriteLine("  top 25 targets (addr : count  void/total  isKey  cands  dethunk  keyName):");
+        foreach (var kv in MnfCount.OrderByDescending(k => k.Value).Take(25))
+        {
+            var cl = MnfClass.TryGetValue(kv.Key, out var c) ? c : Def;
+            var dt = cl.dethunkTarget != 0 ? $"->{cl.dethunkTarget:X}({cl.dethunkCands})" : "";
+            var vv = MnfVoidCount.TryGetValue(kv.Key, out var vc) ? vc : 0;
+            Console.WriteLine($"    @{kv.Key:X}  {kv.Value,-7} void={vv,-6} isKey={cl.isKey,-5} cands={cl.cands,-3} {dt,-16} {cl.name}");
+        }
     }
 
     private static IEnumerable<FieldAnalysisContext> EnumerateInstanceFields(TypeAnalysisContext t)

@@ -36,6 +36,9 @@ string? Option(string name)
 var detailCategory = Option("--detail");
 var savePath = Option("--save");
 var baselinePath = Option("--baseline");
+var findStr = Option("--find");        // list methods whose body has an ldstr containing this substring
+var dumpMethod = Option("--dump");     // dump the CIL of Type::Method (or first match of a substring)
+var findHits = new List<string>();
 
 var dlls = Directory.GetFiles(dir, "*.dll", SearchOption.AllDirectories);
 long totalMethods = 0, incompleteMethods = 0, totalMarkers = 0;
@@ -50,6 +53,7 @@ var worstMethods = new List<(string Method, long Markers)>();
 var singleMarkerCategory = new Dictionary<string, long>();   // category of the ONLY marker in a 1-marker method
 var fieldOffsetArrayBase = new Dictionary<long, long>();      // offset -> count, base is an array
 var fieldOffsetObjectBase = new Dictionary<long, long>();     // offset -> count, base is a non-array object
+var mnfAddr = new Dictionary<string, long>();                 // "Method not found @X" target address -> count
 
 foreach (var path in dlls)
 {
@@ -67,6 +71,21 @@ foreach (var path in dlls)
 
         totalMethods++;
         dllMethods++;
+
+        var fqn = $"{type.FullName}::{method.Name}";
+        if (dumpMethod != null && fqn.Contains(dumpMethod))
+        {
+            Console.WriteLine($"===== {Path.GetFileName(path)}  {fqn} =====");
+            foreach (var ins in body.Instructions)
+                Console.WriteLine($"  IL_{ins.Offset:X4}: {ins.OpCode} {(ins.Operand is string s2 ? $"\"{s2}\"" : ins.Operand)}");
+            Console.WriteLine();
+        }
+        if (findStr != null)
+        {
+            foreach (var ins in body.Instructions)
+                if (ins.OpCode.Code == CilCode.Ldstr && ins.Operand is string fs && fs.Contains(findStr))
+                { findHits.Add($"{Path.GetFileName(path)}  {fqn}"); break; }
+        }
 
         var instructions = body.Instructions;
         long markersHere = 0;
@@ -103,6 +122,13 @@ foreach (var path in dlls)
             var category = Categorise(message);
             byCategory[category] = byCategory.GetValueOrDefault(category) + 1;
             soleCategory = category;
+
+            if (category == "Method not found")
+            {
+                var at = message.IndexOf('@');
+                var addr = at >= 0 ? message[(at + 1)..].Trim() : "(no-addr)";
+                mnfAddr[addr] = mnfAddr.GetValueOrDefault(addr) + 1;
+            }
 
             if (category == "Unmanaged memory load" && AddressShape(message) == "field: TYPED base" && TrailingOffset(message) is { } fo)
             {
@@ -156,6 +182,14 @@ foreach (var path in dlls)
     perDll.Add((Path.GetFileName(path), dllMethods, dllIncomplete, dllMarkers));
 }
 
+if (findStr != null)
+{
+    Console.WriteLine($"===== methods with ldstr containing \"{findStr}\": {findHits.Count} =====");
+    foreach (var h in findHits.Take(40)) Console.WriteLine($"  {h}");
+    Environment.Exit(0);
+}
+if (dumpMethod != null) Environment.Exit(0);
+
 if (totalMethods == 0)
 {
     Console.Error.WriteLine($"No method bodies found under {dir}");
@@ -183,6 +217,19 @@ if (byShape.Count > 0)
     Console.WriteLine("---- 'Unmanaged memory load' by address shape ----");
     foreach (var kv in byShape.OrderByDescending(k => k.Value))
         Console.WriteLine($"  {kv.Key,-32} {kv.Value,9:N0}  ({100.0 * kv.Value / unmanaged:F1}%)");
+}
+
+if (mnfAddr.Count > 0)
+{
+    var mnfTotal = mnfAddr.Values.Sum();
+    Console.WriteLine();
+    Console.WriteLine($"---- 'Method not found' target addresses: {mnfTotal:N0} markers over {mnfAddr.Count:N0} DISTINCT targets ----");
+    long top10 = mnfAddr.OrderByDescending(k => k.Value).Take(10).Sum(k => k.Value);
+    long top100 = mnfAddr.OrderByDescending(k => k.Value).Take(100).Sum(k => k.Value);
+    Console.WriteLine($"     top-10 targets cover {top10:N0} ({100.0 * top10 / mnfTotal:F1}%), top-100 cover {top100:N0} ({100.0 * top100 / mnfTotal:F1}%)");
+    Console.WriteLine("     top 30 targets (address = count):");
+    foreach (var kv in mnfAddr.OrderByDescending(k => k.Value).Take(30))
+        Console.WriteLine($"       @{kv.Key,-14} : {kv.Value:N0}");
 }
 
 Console.WriteLine();

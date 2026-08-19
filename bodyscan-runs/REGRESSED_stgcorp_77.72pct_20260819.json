@@ -1,0 +1,25 @@
+{
+  "Methods": 103264,
+  "Clean": 80253,
+  "Incomplete": 23011,
+  "Markers": 134513,
+  "ByCategory": {
+    "Method not found": 49921,
+    "Analysis warning": 7814,
+    "Unmanaged memory load": 66823,
+    "Indirect call": 5271,
+    "Indirect jump": 243,
+    "Unknown call target": 1510,
+    "Not implemented": 2017,
+    "Invalid instruction": 912,
+    "Other": 1,
+    "Store unknown operand": 1
+  },
+  "ByShape": {
+    "other / bare base": 2726,
+    "field: UNTYPED base": 16104,
+    "indexed (array-like)": 12719,
+    "field: TYPED base": 18100,
+    "frame/stack-register base": 17174
+  }
+}
