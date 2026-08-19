@@ -18,26 +18,35 @@ namespace NetSpyAdapter
             }
 
             ModuleDefMD module = ModuleDefMD.Load(assemblyBytes);
-            DecompilerSettings settings = new DecompilerSettings();
-
-            foreach (TypeDef type in module.Types)
+            try
             {
-                if (type == null || type.FullName == "<Module>")
-                {
-                    continue;
-                }
+                DecompilerSettings settings = new DecompilerSettings();
 
-                string code;
-                try
+                foreach (TypeDef type in module.Types)
                 {
-                    code = DecompileType(module, type, settings);
-                }
-                catch (Exception ex)
-                {
-                    code = "// NetSpy decompile failed for " + type.FullName + ": " + ex.Message;
-                }
+                    if (type == null || type.FullName == "<Module>")
+                    {
+                        continue;
+                    }
 
-                writeFile(BuildRelativePath(type), code);
+                    string code;
+                    try
+                    {
+                        code = DecompileType(module, type, settings);
+                    }
+                    catch (Exception ex)
+                    {
+                        code = "// NetSpy decompile failed for " + type.FullName + ": " + ex.Message;
+                    }
+
+                    writeFile(BuildRelativePath(type), code);
+                }
+            }
+            finally
+            {
+                // Free the loaded module so a batch run over 131 assemblies does not accumulate
+                // gigabytes of dnlib metadata (the caller GC.Collects between assemblies).
+                module.Dispose();
             }
         }
 
@@ -66,6 +75,21 @@ namespace NetSpyAdapter
         private static readonly Regex RefArithmetic = new Regex(@"(?<![\w>\])])\(ref \w+\)\s*[-+]\s*\w+", RegexOptions.Compiled);
         private static readonly Regex RefValue = new Regex(@"(?<![\w>\])])\(ref \w+\)", RegexOptions.Compiled);
 
+        // The injected Cpp2IL attributes carry [AttributeUsage(<int>, AllowMultiple = true)] where the
+        // AttributeTargets argument decompiles to a bare int. That does not compile (no implicit int->
+        // enum conversion), which disables AllowMultiple and turns every legitimate duplicate
+        // application (e.g. two [Calls] on one method) into a CS0579 error. Casting the constant back
+        // to the enum restores the whole thing. Matches AttributeUsage( or AttributeUsageAttribute(.
+        private static readonly Regex AttributeUsageEnum = new Regex(@"(AttributeUsage(?:Attribute)?\(\s*)(\d+)", RegexOptions.Compiled);
+
+        // Some injected Cpp2IL attributes (AttributeAttribute, ...) are injected as bare types with no
+        // [AttributeUsage] at all, so they default to AllowMultiple = false. A type carrying several
+        // original custom attributes then gets several [Attribute] applications -> CS0579. Give every
+        // Cpp2ILInjected attribute class that lacks a usage a permissive one (AllowMultiple = true only
+        // ever permits, never breaks a single application).
+        private static readonly Regex InjectedAttrClass =
+            new Regex(@"(?m)^([ \t]*)(public\s+(?:sealed\s+)?class\s+\w+\s*:\s*Attribute\b)", RegexOptions.Compiled);
+
         private static string SanitizeInvalidConstructs(string code)
         {
             if (string.IsNullOrEmpty(code))
@@ -78,6 +102,13 @@ namespace NetSpyAdapter
             code = RefArithmetic.Replace(code, "default");
             // 3) Any remaining "(ref local)" used as a value -> placeholder.
             code = RefValue.Replace(code, "default");
+            // 4) [AttributeUsage(64, ...)] -> [AttributeUsage((AttributeTargets)64, ...)] so the injected
+            //    attributes compile and their AllowMultiple is honored (kills the CS0579 duplicates).
+            code = AttributeUsageEnum.Replace(code, "$1(AttributeTargets)$2");
+            // 5) An injected Cpp2ILInjected attribute class with no [AttributeUsage] -> give it a
+            //    permissive one so multiple applications on one member don't become CS0579.
+            if (code.Contains("namespace Cpp2ILInjected") && code.Contains(": Attribute") && !code.Contains("AttributeUsage"))
+                code = InjectedAttrClass.Replace(code, "$1[AttributeUsage(AttributeTargets.All, AllowMultiple = true)]\r\n$1$2", 1);
             return code;
         }
 
