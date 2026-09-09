@@ -82,18 +82,32 @@ public static class IlGenerator
         if (instruction.Operands[operandIndex] is not Immediate { UnsignedValue: 0 })
             return false;
 
-        var otherIndex = operandIndex == 1 ? 2 : 1;
-        if (instruction.Operands[otherIndex] is not LocalVariable other)
-            return false;
-
-        // A local whose type was never resolved is declared as object further down, so the comparison is
-        // against a reference either way and the literal 0 cannot stand. Treating it as one here is what
-        // makes the untyped half of these comparisons compile at all.
-        if (other.Type is not { } otherType)
+        TypeAnalysisContext? otherType;
+        switch (instruction.Operands[operandIndex == 1 ? 2 : 1])
         {
-            instructions.Add(CilOpCodes.Ldnull);
-            return true;
+            // A local whose type was never resolved is declared as object further down, so the comparison is
+            // against a reference either way and the literal 0 cannot stand. Treating it as one here is what
+            // makes the untyped half of these comparisons compile at all.
+            case LocalVariable { Type: null }:
+                instructions.Add(CilOpCodes.Ldnull);
+                return true;
+
+            case LocalVariable local:
+                otherType = local.Type;
+                break;
+
+            // Fields carry a declared type just as locals do, and a field compared against 0 is the same
+            // situation; leaving them out is what kept the pointer comparisons unfixed.
+            case FieldReference fieldRef:
+                otherType = fieldRef.Field.FieldType;
+                break;
+
+            default:
+                return false;
         }
+
+        if (otherType is null)
+            return false;
 
         if (!otherType.IsValueType)
         {
@@ -101,7 +115,11 @@ public static class IlGenerator
             return true;
         }
 
-        if (otherType.ToTypeSignature() is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U })
+        // il2cpp metadata resolves System.IntPtr as an ordinary struct rather than the native int primitive,
+        // so the signature check alone misses it and the comparison stays IntPtr against int. Match the name
+        // as well, otherwise the largest pointer-comparison shape never gets fixed.
+        if (otherType.ToTypeSignature() is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U }
+            || otherType.FullName is "System.IntPtr" or "System.UIntPtr")
         {
             instructions.Add(CilOpCodes.Ldc_I4_0);
             instructions.Add(CilOpCodes.Conv_I);
