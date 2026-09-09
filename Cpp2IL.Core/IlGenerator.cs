@@ -32,6 +32,9 @@ public static class IlGenerator
     // disables) - `.ctor` cannot be named as a C# member, so a call to one never compiles.
     private static readonly bool ConstructAsNewobj = Environment.GetEnvironmentVariable("CPP2IL_CTOR_NEWOBJ") != "0";
 
+    // Casts an untyped local to what the use site expects. On by default (CPP2IL_CAST_UNTYPED=0 disables).
+    private static readonly bool CastUntypedLocals = Environment.GetEnvironmentVariable("CPP2IL_CAST_UNTYPED") != "0";
+
     /// <summary>
     /// Emits an explicit initobj per local at method entry. The runtime already zeroes them because
     /// InitializeLocals is set, but the decompiled C# cannot prove it and every read becomes CS0165.
@@ -844,6 +847,26 @@ public static class IlGenerator
         return instructions.ToList().GetRange(startIndex, instructions.Count - startIndex); // Return added IL
     }
     
+
+    // A local the inference never typed is declared `object`, so every use of it as anything else - a
+    // receiver, an arithmetic operand, an argument - fails to compile even though the site using it knows
+    // exactly what the type has to be. The cast just states what the caller already established, and it is
+    // what turns `obj.get_position_Injected(...)` (CS1061 on object) into
+    // `((Transform)obj).get_position_Injected(...)`.
+    //
+    // unbox.any rather than castclass: it is correct for reference types, value types and generic
+    // parameters alike, and decompiles to the same `(T)x` in every case. A byref or pointer target is
+    // skipped - neither is castable, and a managed pointer is not what an untyped local is standing in for.
+    private static void CastUntypedLocal(LocalVariable local, TypeAnalysisContext? expectedType, CilInstructionCollection instructions)
+    {
+        if (!CastUntypedLocals || local.Type != null || expectedType == null)
+            return;
+
+        if (expectedType is ByRefTypeAnalysisContext || expectedType.FullName is "System.Object" or "System.Void")
+            return;
+
+        instructions.Add(CilOpCodes.Unbox_Any, expectedType.ToTypeSignature().ToTypeDefOrRef());
+    }
     private static int ConstructorReceiverIndex(Instruction constructorCall) => constructorCall.OpCode == OpCode.CallVoid ? 1 : 2;
 
     // `: base(...)` and `: this(...)` are the only constructor calls that genuinely are calls on an object
@@ -936,6 +959,7 @@ public static class IlGenerator
                 break;
             case LocalVariable local:
                 LoadLocal(local, method, locals);
+                CastUntypedLocal(local, expectedType, instructions);
                 break;
             case ArrayLength arrayLength:
                 LoadLocal(arrayLength.Array, method, locals);
