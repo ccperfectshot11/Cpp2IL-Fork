@@ -33,6 +33,10 @@ internal static class MarkerDiag
     // delta-to-nearest-field histogram for the B (real class, no field) family.
     private static readonly ConcurrentDictionary<long, long> DeltaBucket = new();
 
+    // A4 is the biggest bucket and covers two unrelated problems - a local the inference never typed, and a
+    // base that is not a local at all. Only the first is type propagation, so split it before working on it.
+    private static readonly ConcurrentDictionary<string, long> A4Kinds = new();
+
     // per-method attribution: methodKey -> (bucket -> count). used for "methods that lose all their
     // Unmanaged markers if this bucket is fixed" and dumped to JSON for the BodyScan all-category join.
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> PerMethod = new();
@@ -89,6 +93,10 @@ internal static class MarkerDiag
         foreach (var kv in DeltaBucket.OrderByDescending(k => k.Value).Take(20))
             Console.WriteLine($"     delta 0x{kv.Key:X4} : {kv.Value}");
 
+        Console.WriteLine("  -- A4_untyped_base, dupa felul bazei --");
+        foreach (var kv in A4Kinds.OrderByDescending(k => k.Value))
+            Console.WriteLine($"     {kv.Value,8}  {kv.Key}");
+
         Console.WriteLine("  -- per bucket: [markers] and [methods that become Unmanaged-clean if only this bucket fixed] --");
         foreach (var b in order)
         {
@@ -144,7 +152,20 @@ internal static class MarkerDiag
         if (memory.Index != null || memory.Scale != 0) { Bump("INDEXED", mk); return; }
 
         // 2. base is not a typed local -> type-prop never reached it (A4).
-        if (memory.Base is not LocalVariable { Type: { } baseType }) { Bump("A4_untyped_base", mk); return; }
+        if (memory.Base is not LocalVariable { Type: { } baseType })
+        {
+            // By far the largest bucket, and it hides two different problems: a local the inference never
+            // typed, versus a base that is not a local at all. Only the first is type propagation, so record
+            // which it is instead of treating them as one cause.
+            A4Kinds.AddOrUpdate(
+                memory.Base is null ? "(null)"
+                    : memory.Base is LocalVariable ? "LocalVariable fara tip"
+                    : memory.Base.GetType().Name,
+                1, (_, v) => v + 1);
+
+            Bump("A4_untyped_base", mk);
+            return;
+        }
 
         // 3. byref base (managed pointer). Fix-D territory; kept as its own leaf.
         if (baseType is ByRefTypeAnalysisContext) { Bump("BYREF_base", mk); return; }
