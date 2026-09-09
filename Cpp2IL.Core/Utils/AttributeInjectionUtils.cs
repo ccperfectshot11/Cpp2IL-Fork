@@ -89,8 +89,17 @@ public static class AttributeInjectionUtils
         });
     }
 
+    // C# defaults a missing [AttributeUsage] to AttributeTargets.All with AllowMultiple = false, and All is
+    // exactly what widening the usage achieves - so the attribute only earns its place if some member really
+    // does carry an injected attribute twice. CPP2IL_NO_ATTR_USAGE=1 answers that by measurement instead of
+    // argument: if nothing regresses, the shared-assembly path need not emit it at all.
+    private static readonly bool SkipAttributeUsage = Environment.GetEnvironmentVariable("CPP2IL_NO_ATTR_USAGE") == "1";
+
     private static void ApplyAttributeUsageAttribute(ApplicationAnalysisContext appContext, MultiAssemblyInjectedType multiAssemblyInjectedType, AttributeTargets attributeTargets, bool allowMultiple)
     {
+        if (SkipAttributeUsage)
+            return;
+
         var mscorlibAssembly = appContext.GetAssemblyByName("mscorlib") ?? throw new("Could not find mscorlib");
         var targetsEnumType = GetAttributeTargetsType(mscorlibAssembly);
         var usageAttribute = mscorlibAssembly.GetTypeByFullName($"System.{nameof(AttributeUsageAttribute)}") ?? throw new("Could not find AttributeUsageAttribute");
