@@ -89,6 +89,42 @@ public static class IlGenerator
         return false;
     }
 
+    /// <summary>
+    /// Internal fields the runtime reads directly but C# cannot name, so a plain ldfld gives CS1061. They
+    /// need two different treatments, and confusing them is the worst outcome: one has a public equivalent
+    /// and must be mapped onto it, the other is native plumbing and must be dropped, because mapping it to
+    /// anything would compile and then behave differently. The caller has already pushed the instance.
+    /// Anything not listed here keeps its ldfld, so an unknown field still shows up as an error rather than
+    /// being quietly guessed at.
+    /// </summary>
+    private static bool TryEmitInternalFieldRead(FieldAnalysisContext field, MethodDefinition definition, CilInstructionCollection instructions)
+    {
+        var module = definition.DeclaringModule!;
+        var factory = module.CorLibTypeFactory;
+
+        // String stores its length in a private field; the public equivalent is Length.
+        if (field.Name is "_stringLength" or "m_stringLength"
+            && field.DeclaringType.ToTypeSignature() is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.String })
+        {
+            instructions.Add(CilOpCodes.Callvirt, factory.CorLibScope
+                .CreateTypeReference("System", "String")
+                .CreateMemberReference("get_Length", MethodSignature.CreateInstance(factory.Int32)));
+            return true;
+        }
+
+        // UnityEngine.Object::m_CachedPtr is the native object pointer. Nothing in C# corresponds to it, so
+        // discard the instance and yield a null pointer, the same shape the runtime-metadata reads produce.
+        if (field.Name == "m_CachedPtr")
+        {
+            instructions.Add(CilOpCodes.Pop);
+            instructions.Add(CilOpCodes.Ldc_I4_0);
+            instructions.Add(CilOpCodes.Conv_I);
+            return true;
+        }
+
+        return false;
+    }
+
     public static void GenerateIl(MethodAnalysisContext context, MethodDefinition definition)
     {
         var assembly = context.DeclaringType!.DeclaringAssembly;
@@ -795,7 +831,7 @@ public static class IlGenerator
                 // Reading System.Int32::m_value off an int is how il2cpp stores the value, but in C# the
                 // local already IS the value, and the field is not accessible - the decompiled source gets
                 // CS1061. The load is a no-op, so emit nothing for it.
-                if (!IsPrimitiveBackingField(field.Field))
+                if (!IsPrimitiveBackingField(field.Field) && !TryEmitInternalFieldRead(field.Field, method, instructions))
                     instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor());
 
                 // a.b.c: keep reading into the value-type field that was loaded
