@@ -83,8 +83,17 @@ public static class IlGenerator
             return false;
 
         var otherIndex = operandIndex == 1 ? 2 : 1;
-        if (instruction.Operands[otherIndex] is not LocalVariable { Type: { } otherType })
+        if (instruction.Operands[otherIndex] is not LocalVariable other)
             return false;
+
+        // A local whose type was never resolved is declared as object further down, so the comparison is
+        // against a reference either way and the literal 0 cannot stand. Treating it as one here is what
+        // makes the untyped half of these comparisons compile at all.
+        if (other.Type is not { } otherType)
+        {
+            instructions.Add(CilOpCodes.Ldnull);
+            return true;
+        }
 
         if (!otherType.IsValueType)
         {
