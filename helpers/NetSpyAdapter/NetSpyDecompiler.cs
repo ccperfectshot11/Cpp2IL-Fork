@@ -21,6 +21,10 @@ namespace NetSpyAdapter
             try
             {
                 DecompilerSettings settings = new DecompilerSettings();
+                // Cross-assembly ambiguity is not something FullyQualifyAmbiguousTypeNames catches: with
+                // `using UnityEngine;` in scope, a bare `Object` is ambiguous against UnityEngine.Object,
+                // and it is written that way 991 times. Qualifying everything is verbose but never wrong.
+                settings.FullyQualifyAllTypes = true;
 
                 foreach (TypeDef type in module.Types)
                 {
