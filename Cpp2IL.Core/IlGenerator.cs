@@ -35,6 +35,9 @@ public static class IlGenerator
     // Casts an untyped local to what the use site expects. On by default (CPP2IL_CAST_UNTYPED=0 disables).
     private static readonly bool CastUntypedLocals = Environment.GetEnvironmentVariable("CPP2IL_CAST_UNTYPED") != "0";
 
+    // Reads a backing field owned by another type through its property. On by default (CPP2IL_BACKING_PROP=0).
+    private static readonly bool RouteBackingFields = Environment.GetEnvironmentVariable("CPP2IL_BACKING_PROP") != "0";
+
     /// <summary>
     /// Emits an explicit initobj per local at method entry. The runtime already zeroes them because
     /// InitializeLocals is set, but the decompiled C# cannot prove it and every read becomes CS0165.
@@ -867,6 +870,48 @@ public static class IlGenerator
 
         instructions.Add(CilOpCodes.Unbox_Any, expectedType.ToTypeSignature().ToTypeDefOrRef());
     }
+
+    // il2cpp inlines property accessors, so the game's own code reads <X>k__BackingField directly. That
+    // name is not a C# identifier, the decompiler prints a sanitised spelling of it, and across assemblies
+    // that spelling matches nothing - the largest remaining CS1061 shape. The property it backs carries the
+    // name the original source actually used, so route the read back through it: `runner.Game`.
+    //
+    // Only across types. Inside the declaring type a direct field access is exactly what the original
+    // source compiles to, and leaving it alone is what lets the decompiler collapse the pair back into
+    // `{ get; set; }` - renaming the field instead would break that and make the output less like the
+    // original project, not more.
+    //
+    // Value types are skipped: an instance call on one needs the address, and the receiver here is a value.
+    private static bool TryEmitBackingFieldRead(FieldAnalysisContext field, MethodDefinition method, CilInstructionCollection instructions)
+    {
+        if (!RouteBackingFields || field.DeclaringType.IsValueType)
+            return false;
+
+        if (field.DeclaringType.FullName == method.DeclaringType?.FullName)
+            return false;
+
+        if (BackedPropertyName(field.Name) is not { } propertyName)
+            return false;
+
+        var getter = field.DeclaringType.Methods.FirstOrDefault(m => m.Name == "get_" + propertyName && m.Parameters.Count == 0);
+
+        if (getter == null)
+            return false;
+
+        instructions.Add(CilOpCodes.Callvirt, getter.ToMethodDescriptor());
+        return true;
+    }
+
+    // "<Game>k__BackingField" -> "Game"
+    private static string? BackedPropertyName(string fieldName)
+    {
+        const string suffix = ">k__BackingField";
+
+        if (fieldName.Length <= suffix.Length + 1 || fieldName[0] != '<' || !fieldName.EndsWith(suffix, StringComparison.Ordinal))
+            return null;
+
+        return fieldName.Substring(1, fieldName.Length - suffix.Length - 1);
+    }
     private static int ConstructorReceiverIndex(Instruction constructorCall) => constructorCall.OpCode == OpCode.CallVoid ? 1 : 2;
 
     // `: base(...)` and `: this(...)` are the only constructor calls that genuinely are calls on an object
@@ -1006,7 +1051,9 @@ public static class IlGenerator
                 // Reading System.Int32::m_value off an int is how il2cpp stores the value, but in C# the
                 // local already IS the value, and the field is not accessible - the decompiled source gets
                 // CS1061. The load is a no-op, so emit nothing for it.
-                if (!IsPrimitiveBackingField(field.Field) && !TryEmitInternalFieldRead(field.Field, method, instructions))
+                if (!IsPrimitiveBackingField(field.Field)
+                    && !TryEmitBackingFieldRead(field.Field, method, instructions)
+                    && !TryEmitInternalFieldRead(field.Field, method, instructions))
                     instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor());
 
                 // a.b.c: keep reading into the value-type field that was loaded
