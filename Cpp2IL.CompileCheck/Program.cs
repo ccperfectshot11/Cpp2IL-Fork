@@ -195,7 +195,10 @@ internal static class Program
         }
     }
 
-    private const int BatchSize = 800;
+    // Overridable so a failure that happens to land on a batch boundary can be told apart from one caused by
+    // a particular type: move the boundary and see whether the failure moves with it.
+    private static readonly int BatchSize =
+        int.TryParse(Environment.GetEnvironmentVariable("CPP2IL_CC_BATCH"), out var b) && b > 0 ? b : 800;
 
     private static void CompileBatch(List<SyntaxTree> trees, List<MetadataReference> refs)
     {
