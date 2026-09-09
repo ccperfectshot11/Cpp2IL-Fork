@@ -53,6 +53,42 @@ public static class IlGenerator
         return field.FieldType.ToTypeSignature() is CorLibTypeSignature { ElementType: var value } && value == owner;
     }
 
+    /// <summary>
+    /// il2cpp compares a reference or a pointer against literal 0, and emitting that 0 as an int gives C#
+    /// like <c>x == 0</c>, which does not compile - CS0019, and the largest single cause of it by far.
+    /// A reference gets ldnull, restoring the null test the source had. A pointer keeps its numeric
+    /// identity but is widened to native int, so the comparison is IntPtr against IntPtr rather than int;
+    /// substituting null there would change the meaning, since 0 really is IntPtr.Zero.
+    /// Anything else, including bitwise arithmetic on pointers, is left exactly as it was.
+    /// </summary>
+    private static bool TryEmitZeroAgainstNonInt(Instruction instruction, int operandIndex, CilInstructionCollection instructions)
+    {
+        if (instruction.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual))
+            return false;
+
+        if (instruction.Operands[operandIndex] is not Immediate { UnsignedValue: 0 })
+            return false;
+
+        var otherIndex = operandIndex == 1 ? 2 : 1;
+        if (instruction.Operands[otherIndex] is not LocalVariable { Type: { } otherType })
+            return false;
+
+        if (!otherType.IsValueType)
+        {
+            instructions.Add(CilOpCodes.Ldnull);
+            return true;
+        }
+
+        if (otherType.ToTypeSignature() is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U })
+        {
+            instructions.Add(CilOpCodes.Ldc_I4_0);
+            instructions.Add(CilOpCodes.Conv_I);
+            return true;
+        }
+
+        return false;
+    }
+
     public static void GenerateIl(MethodAnalysisContext context, MethodDefinition definition)
     {
         var assembly = context.DeclaringType!.DeclaringAssembly;
@@ -553,12 +589,19 @@ public static class IlGenerator
                 // operands are coerced to the (float) result type. A no-op when they already match.
                 var floatConversion = FloatArithmeticConversion(instruction);
 
-                LoadOperand(instruction.Operands[1], method, locals, writeLine);
-                if (floatConversion is { } conv1)
-                    instructions.Add(conv1);
-                LoadOperand(instruction.Operands[2], method, locals, writeLine);
-                if (floatConversion is { } conv2)
-                    instructions.Add(conv2);
+                if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
+                {
+                    LoadOperand(instruction.Operands[1], method, locals, writeLine);
+                    if (floatConversion is { } conv1)
+                        instructions.Add(conv1);
+                }
+
+                if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
+                {
+                    LoadOperand(instruction.Operands[2], method, locals, writeLine);
+                    if (floatConversion is { } conv2)
+                        instructions.Add(conv2);
+                }
 
                 switch (instruction.OpCode)
                 {
