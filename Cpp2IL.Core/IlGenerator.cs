@@ -74,6 +74,21 @@ public static class IlGenerator
     /// substituting null there would change the meaning, since 0 really is IntPtr.Zero.
     /// Anything else, including bitwise arithmetic on pointers, is left exactly as it was.
     /// </summary>
+    // Diagnostic-only (env CPP2IL_ZERODIAG=1): names the operand kinds compared against literal 0 that the
+    // rewrite below declines to touch, so the remaining shapes can be found rather than guessed at. One line
+    // per distinct kind. Zero cost when off.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> UnhandledZeroOperands = new();
+
+    private static void ReportUnhandledZeroComparison(IOperand operand)
+    {
+        if (Environment.GetEnvironmentVariable("CPP2IL_ZERODIAG") != "1")
+            return;
+
+        var kind = operand.GetType().Name;
+        if (UnhandledZeroOperands.TryAdd(kind, 0))
+            Console.Error.WriteLine($"[zerodiag] operand comparat cu 0, netratat: {kind}");
+    }
+
     private static bool TryEmitZeroAgainstNonInt(Instruction instruction, int operandIndex, CilInstructionCollection instructions)
     {
         if (instruction.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual))
@@ -102,7 +117,21 @@ public static class IlGenerator
                 otherType = fieldRef.Field.FieldType;
                 break;
 
+            // A string is a reference, so the 0 is a null test whatever the other side looks like.
+            case StringLiteral:
+                instructions.Add(CilOpCodes.Ldnull);
+                return true;
+
+            // These are all emitted as a native int further down - a raw memory read, the address of
+            // something, a method pointer, a class pointer - so the zero they are compared against has to be
+            // native int too, or the comparison reads as IntPtr against int and does not compile.
+            case MemoryOperand or AddressOf or RuntimeMethodInfoAnalysisContext or RuntimeClassTypeAnalysisContext:
+                instructions.Add(CilOpCodes.Ldc_I4_0);
+                instructions.Add(CilOpCodes.Conv_I);
+                return true;
+
             default:
+                ReportUnhandledZeroComparison(instruction.Operands[operandIndex == 1 ? 2 : 1]);
                 return false;
         }
 
