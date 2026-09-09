@@ -306,9 +306,11 @@ public static class MetadataResolver
             if (callInstruction.Operands[0] is not Immediate dest)
                 continue;
 
-            var target = dest.UnsignedValue;
-
             var keyFunctionAddresses = method.AppContext.GetOrCreateKeyFunctionAddresses();
+
+            // Resolve a jmp thunk to the key function it forwards to, so every comparison below works on
+            // the canonical address. Non-key addresses come back unchanged.
+            var target = keyFunctionAddresses.CanonicalizeKeyFunctionAddress(dest.UnsignedValue);
 
             if (keyFunctionAddresses.IsKeyFunctionAddress(target))
             {

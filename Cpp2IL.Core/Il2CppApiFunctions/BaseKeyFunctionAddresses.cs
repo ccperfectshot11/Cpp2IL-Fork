@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -64,9 +65,38 @@ public abstract class BaseKeyFunctionAddresses
     private readonly Dictionary<string, ulong> resolvedAddressMap = [];
     private readonly HashSet<ulong> resolvedAddressSet = [];
 
+    // A call site does not always target a key function directly: the compiler frequently emits a jmp
+    // thunk and calls that instead. Comparing the raw call target against resolvedAddressSet then misses
+    // the function and the call degrades into a "Method not found" marker. Follow one level of thunk and
+    // report the destination only when it is itself a resolved key function, so ordinary addresses are
+    // returned untouched. Cached because GetThunkTarget re-decodes the binary and analysis runs threaded.
+    private readonly ConcurrentDictionary<ulong, ulong> canonicalKeyFunctionCache = new();
+
+    public ulong CanonicalizeKeyFunctionAddress(ulong address)
+    {
+        if (address == 0 || resolvedAddressSet.Contains(address))
+            return address;
+
+        return canonicalKeyFunctionCache.GetOrAdd(address, addr =>
+        {
+            try
+            {
+                var thunkTarget = _appContext.InstructionSet.GetThunkTarget(_appContext, addr);
+                if (thunkTarget != 0 && resolvedAddressSet.Contains(thunkTarget))
+                    return thunkTarget;
+            }
+            catch
+            {
+                //Not decodable as a thunk, so treat it as an ordinary address.
+            }
+
+            return addr;
+        });
+    }
+
     public bool IsKeyFunctionAddress(ulong address)
     {
-        return address != 0 && resolvedAddressSet.Contains(address);
+        return address != 0 && (resolvedAddressSet.Contains(address) || CanonicalizeKeyFunctionAddress(address) != address);
     }
 
     private void FindExport(string name, out ulong ptr)
