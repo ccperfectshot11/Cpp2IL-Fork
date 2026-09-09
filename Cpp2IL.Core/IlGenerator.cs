@@ -28,6 +28,10 @@ public static class IlGenerator
     /// </summary>
     public static readonly bool SkipHelpersType = Environment.GetEnvironmentVariable("CPP2IL_NO_HELPERS") == "1";
 
+    // Emits an unfused .ctor call as newobj instead of a call. On by default (CPP2IL_CTOR_NEWOBJ=0
+    // disables) - `.ctor` cannot be named as a C# member, so a call to one never compiles.
+    private static readonly bool ConstructAsNewobj = Environment.GetEnvironmentVariable("CPP2IL_CTOR_NEWOBJ") != "0";
+
     /// <summary>
     /// Emits an explicit initobj per local at method entry. The runtime already zeroes them because
     /// InitializeLocals is set, but the decompiled C# cannot prove it and every read becomes CS0165.
@@ -612,6 +616,38 @@ public static class IlGenerator
 
                 var importedMethod = targetMethod.ToMethodDescriptor();
 
+                // A .ctor that reaches us as a plain call is a construction that never got fused with an
+                // allocation: il2cpp creates delegates (and a handful of other runtime types) with no ISIL
+                // Newobj at all, so FindConstructorCall has nothing to pair the call with. Emitted as a
+                // call it decompiles to `x._ctor(...)` - `.ctor` is not a nameable C# member - which is the
+                // largest remaining compile-error cause, 2,880 methods. newobj says what actually happened.
+                if (targetMethod is { Name: ".ctor" } && ConstructAsNewobj && !IsChainedConstructorCall(context, instruction))
+                {
+                    var receiverOperand = ConstructorReceiverIndex(instruction);
+                    var constructorArgIndex = receiverOperand + 1;
+                    var suppliedArgs = instruction.Operands.Count - constructorArgIndex;
+
+                    for (var i = 0; i < targetMethod.Parameters.Count; i++)
+                    {
+                        var parameterType = targetMethod.Parameters[i].ParameterType;
+
+                        if (i < suppliedArgs)
+                            LoadOperand(instruction.Operands[constructorArgIndex + i], method, locals, writeLine, parameterType);
+                        else
+                            PushDefaultOf(parameterType, instructions);
+                    }
+
+                    instructions.Add(CilOpCodes.Newobj, importedMethod);
+
+                    // The receiver is the local il2cpp allocated into, so it is where the new object goes.
+                    if (instruction.Operands.Count > receiverOperand)
+                        StoreToOperand(instruction.Operands[receiverOperand], method, locals, writeLine);
+                    else
+                        instructions.Add(CilOpCodes.Pop);
+
+                    break;
+                }
+
                 var thisParamIndex = instruction.OpCode == OpCode.Call ? 2 : 1;
 
                 if (!targetMethod.IsStatic) // Load 'this' param
@@ -802,6 +838,20 @@ public static class IlGenerator
     }
     
     private static int ConstructorReceiverIndex(Instruction constructorCall) => constructorCall.OpCode == OpCode.CallVoid ? 1 : 2;
+
+    // `: base(...)` and `: this(...)` are the only constructor calls that genuinely are calls on an object
+    // that already exists - the one being constructed - so they must stay calls. They appear only inside a
+    // constructor, and only on its own `this`, which is exactly what this checks: anything else named
+    // .ctor is constructing a new object.
+    private static bool IsChainedConstructorCall(MethodAnalysisContext context, Instruction call)
+    {
+        if (context.Name != ".ctor")
+            return false;
+
+        var receiver = ConstructorReceiverIndex(call);
+
+        return call.Operands.Count > receiver && call.Operands[receiver] is LocalVariable { IsThis: true };
+    }
 
     // Try find the follow up CallVoid for a constructor, after a Newobj.
     private static Instruction? FindConstructorCall(MethodAnalysisContext context, Instruction newobj)
