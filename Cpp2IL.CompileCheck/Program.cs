@@ -168,7 +168,7 @@ internal static class Program
                 Interlocked.Increment(ref typesTotal);
                 var failed = code.Contains("// NetSpy decompile failed");
                 var nativ = code.Contains("NativeMethod_0x");
-                var marker = code.Contains("NoteDecompilerIssue");
+                var marker = HasDecompilerMarker(code);
                 var gotoo = code.Contains("goto ");
                 if (failed) Interlocked.Increment(ref decompFail);
                 if (nativ) Interlocked.Increment(ref typesNative);
@@ -193,6 +193,30 @@ internal static class Program
             Console.Error.WriteLine($"  !! {Path.GetFileNameWithoutExtension(dll)}: {innermost.GetType().Name}: {innermost.Message}");
             Console.Error.WriteLine(innermost.StackTrace);
         }
+    }
+
+    // IlGenerator reports an unlifted construct by calling Cpp2ILHelpers::NoteDecompilerIssue, but falls back
+    // to Console.WriteLine when that type is not injected. Matching only the helper name then counts every
+    // marker as absent and reports the output as clean - worse than a wrong number, because it reads as an
+    // improvement. The message text is identical either way, so match on that too.
+    private static readonly string[] MarkerMessages =
+    [
+        "Unmanaged memory load", "Method not found @", "Indirect call:", "Indirect jump:",
+        "Invalid instruction:", "Unknown instruction:", "Not implemented instruction:",
+        "Unknown call target operand:", "Store into unknown operand:", "Stack shift:",
+        "Non static method called without", "Phi opcodes should not exist",
+    ];
+
+    private static bool HasDecompilerMarker(string code)
+    {
+        if (code.Contains("NoteDecompilerIssue"))
+            return true;
+
+        foreach (var message in MarkerMessages)
+            if (code.Contains(message))
+                return true;
+
+        return false;
     }
 
     // Overridable so a failure that happens to land on a batch boundary can be told apart from one caused by
@@ -247,7 +271,7 @@ internal static class Program
             {
                 if (!HasBody(method)) continue;
                 Interlocked.Increment(ref methodsTotal);
-                var markerFree = !method.ToString().Contains("NoteDecompilerIssue");
+                var markerFree = !HasDecompilerMarker(method.ToString());
 
                 var inSpan = errs?.Where(e => method.Span.Contains(e.span.Start)).ToList();
                 var hasErr = inSpan != null && inSpan.Count > 0;

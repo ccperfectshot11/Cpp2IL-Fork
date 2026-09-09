@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -18,8 +19,20 @@ public static class IlGenerator
     private const string HelpersTypeName = "Cpp2ILHelpers";
     private const string NoteIssueMethodName = "NoteDecompilerIssue";
 
+    /// <summary>
+    /// Cpp2ILHelpers is the last type still injected into all 150 assemblies once the attribute types are
+    /// dropped, and its 149 twins account for the remaining CS0433 - 5.207 methods. Skipping the injection
+    /// makes GenerateIl fall back to Console.WriteLine for the markers, which is a corlib method and so has
+    /// no twin. BodyScan matches the callee name against NoteDecompilerIssue or WriteLine, so the marker
+    /// measurement stays intact either way.
+    /// </summary>
+    public static readonly bool SkipHelpersType = Environment.GetEnvironmentVariable("CPP2IL_NO_HELPERS") == "1";
+
     public static void InjectHelpersType(ApplicationAnalysisContext appContext)
     {
+        if (SkipHelpersType)
+            return;
+
         var helpersType = appContext.InjectTypeIntoSharedAssembly(
             HelpersNamespace,
             HelpersTypeName,
