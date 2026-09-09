@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.ISIL;
@@ -9,6 +10,28 @@ namespace Cpp2IL.Core.Analysis;
 public static class LocalVariables
 {
     public static int MaxTypePropagationLoopCount = 5000;
+
+    // CPP2IL_INT_ARITH=1 lets add/sub/mul type their result from an integer operand, like the bitwise ops
+    // already do. Opt-in, and measured worse: those opcodes are also how pointers are walked, and turning
+    // this on adds 351 markers. Kept only so the experiment can be repeated.
+    private static readonly bool IntegerArithmetic = Environment.GetEnvironmentVariable("CPP2IL_INT_ARITH") == "1";
+
+    // Types the locals nothing else could type, whose only definition is a constant. On by default
+    // (CPP2IL_CONST_INT=0 disables); worth +28 strict-compilable methods on the two Assembly-CSharp DLLs.
+    private static readonly bool ConstantLocalsAreIntegers = Environment.GetEnvironmentVariable("CPP2IL_CONST_INT") != "0";
+
+    // Folds [L+d] where L=B+k back into [B+k+d] so field resolution can see a base it is able to type. On
+    // by default (CPP2IL_FOLD_ADDR=0 disables): the single largest measured win, 3,634 -> 4,339 strict
+    // methods on its own, and it drops 1,165 markers.
+    private static readonly string? FoldAddressSetting = Environment.GetEnvironmentVariable("CPP2IL_FOLD_ADDR");
+    private static readonly bool FoldAddressArithmetic = FoldAddressSetting != "0";
+
+    // CPP2IL_FOLD_ADDR=2 also deletes the add once nothing reads it. Not the default: it edits the control
+    // flow graph and measured exactly neutral on strict compilation, so there is nothing to buy the risk.
+    private static readonly bool RemoveFoldedAdds = FoldAddressSetting == "2";
+
+    // Locals no inference may write to for the duration of one pass. See SetTypeIfUnknown.
+    [ThreadStatic] private static HashSet<LocalVariable>? _blockedFromTyping;
 
     private const long StaticFieldsOffset64 = 0xB8;
     private const long StaticFieldsOffset32 = 0x5C;
@@ -234,13 +257,18 @@ public static class LocalVariables
     {
         // Seed types from fixed ground truth - the method's own signature, and type-metadata global
         // loads. Applied once up front and, being applied first, they win over anything inferred later.
+        // Structural, type-free, and it changes which locals are dereferenced, so it has to precede both the
+        // seeds and DereferencedLocals below.
+        if (FoldAddressArithmetic)
+            FoldConstantAddressArithmetic(method);
+
         PropagateFromReturn(method);
         PropagateFromParameters(method);
         SeedRuntimeClassTypes(method);
         SeedNewobjResults(method);
         SeedMethodInfoTypes(method);
         SeedComparisonResults(method);
-        SeedFloatLiterals(method);
+        SeedLiterals(method);
 
         // Everywhere there's a CallVoid after a Newobj, we can resolve the constructor call.
         MetadataResolver.ResolveConstructorCalls(method);
@@ -274,6 +302,286 @@ public static class LocalVariables
             changed |= PropagateStaticFieldStorage(method);
             changed |= TypeAddressedLocals(method);
             changed |= PropagateTypesOnce(method, addressed);
+        }
+
+        // Last resort, and only for locals nothing else could type. Everything that knows better - a field
+        // store, a call argument, a receiver, a phi from a typed value - has already run to a fixpoint and
+        // lost, so what is left is a local whose only definition is a bare constant. That is a number.
+        // Deliberately last so it can never beat a real type, restricted to locals that are never
+        // dereferenced, and followed by pure type propagation only: re-running the metadata resolvers here
+        // could let a wrong guess resolve a field offset or a call against System.Int32 and stick forever.
+        if (ConstantLocalsAreIntegers)
+        {
+            // Nothing derived from a constant may end up on a dereferenced local, whichever rule carries it
+            // there - the seed skips them, but a plain copy would not. Blocked for the whole fallback.
+            _blockedFromTyping = addressed;
+            try
+            {
+                if (SeedRemainingConstantLocals(method, addressed))
+                {
+                    var propagationLoops = 0;
+                    while (PropagateTypesOnce(method, addressed))
+                        if (MaxTypePropagationLoopCount != -1 && ++propagationLoops > MaxTypePropagationLoopCount)
+                            throw new DecompilerException($"Constant type propagation not settling! (looped {MaxTypePropagationLoopCount} times)");
+                }
+            }
+            finally
+            {
+                _blockedFromTyping = null;
+            }
+        }
+
+        ReportUntypedLocalDefinitions(method, addressed);
+    }
+
+
+    /// <summary>
+    /// Folds a constant interior-pointer computation back into the load that uses it: <c>[L + d]</c> where
+    /// <c>L = B + k</c> addresses exactly <c>[B + (k + d)]</c>. il2cpp computes the interior pointer in its
+    /// own instruction whenever an offset is reused, and the load through it then has a base that no
+    /// inference can ever type - the local holds an address, not an object - so the field lookup never runs
+    /// and the load degrades into an "Unmanaged memory load" marker. Restoring the
+    /// <c>[object + field offset]</c> shape is what lets <see cref="MetadataResolver.ResolveFieldOffsets"/>
+    /// see it at all. Measured as the largest single cause: of the untyped locals that are dereferenced,
+    /// 20,795 are defined by an Add - more than any other definition.
+    ///
+    /// Purely structural - it reads no types - so it runs before the fixpoint, which means the dereferenced
+    /// set is computed from the already-folded form. Only a local with exactly one definition is folded:
+    /// with two, which one reaches the load is a question this cannot answer. The add is left in place; it
+    /// may have other users, and removing an instruction here would mean editing the control flow graph.
+    /// </summary>
+    private static void FoldConstantAddressArithmetic(MethodAnalysisContext method)
+    {
+        var instructions = method.ControlFlowGraph!.Instructions;
+
+        // Built from every definition, not just the adds: a local written a second time by anything at all
+        // is ambiguous and must be dropped, so both kinds of write have to be seen here.
+        Dictionary<LocalVariable, (LocalVariable Base, long Offset)>? interior = null;
+        var defined = new HashSet<LocalVariable>();
+
+        foreach (var instruction in instructions)
+        {
+            if (instruction.Destination is not LocalVariable destination)
+                continue;
+
+            if (!defined.Add(destination))
+            {
+                interior?.Remove(destination);
+                continue;
+            }
+
+            if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract))
+                continue;
+
+            if (instruction.Operands is not [_, LocalVariable addressBase, Immediate constant])
+                continue;
+
+            interior ??= new Dictionary<LocalVariable, (LocalVariable, long)>();
+            interior[destination] = (addressBase, instruction.OpCode == OpCode.Add ? constant.Value : -constant.Value);
+        }
+
+        if (interior == null)
+            return;
+
+        var folded = new HashSet<LocalVariable>();
+
+        foreach (var instruction in instructions)
+        {
+            for (var i = 0; i < instruction.Operands.Count; i++)
+            {
+                if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable local } memory)
+                    continue;
+
+                if (!TryWalkToAddressRoot(interior, local, out var root, out var offset))
+                    continue;
+
+                memory.Base = root;
+                memory.Addend += offset;
+                instruction.SetOperand(i, memory);
+                folded.Add(local);
+            }
+        }
+
+        // Every interior local is a candidate, not just the one the load named: folding a chain leaves the
+        // intermediate links unread too, and an add nothing reads is dead whether we folded it or not.
+        if (RemoveFoldedAdds && folded.Count > 0)
+            RemoveDeadAddressArithmetic(method, new HashSet<LocalVariable>(interior.Keys));
+    }
+
+    // Walks a chain of interior pointers (L2 = L1 + 8, L1 = B + 16) down to the object it is measured from.
+    // Bounded rather than cycle-checked: a real chain is one or two links, and a loop in the graph must not
+    // turn into a hang or an addend that grows without limit.
+    private static bool TryWalkToAddressRoot(
+        Dictionary<LocalVariable, (LocalVariable Base, long Offset)> interior,
+        LocalVariable local, out LocalVariable root, out long offset)
+    {
+        root = local;
+        offset = 0;
+
+        for (var steps = 0; interior.TryGetValue(root, out var step); steps++)
+        {
+            if (steps >= 8)
+                return false;
+
+            offset += step.Offset;
+            root = step.Base;
+        }
+
+        return !ReferenceEquals(root, local);
+    }
+
+    // An add that existed only to compute an address we just folded into the load is now dead, and left in
+    // place it decompiles to `someObject + 24`, which is not valid C# - the single largest compile-error
+    // shape in the output (2,900 methods: "Operator '+' cannot be applied to operands of type '<id>' and
+    // 'int'"). Removed only once nothing reads the local any more, and removed from the owning block:
+    // ControlFlowGraph.Instructions rebuilds a flat copy on every access, so deleting from it does nothing.
+    private static void RemoveDeadAddressArithmetic(MethodAnalysisContext method, HashSet<LocalVariable> folded)
+    {
+        var stillRead = new HashSet<LocalVariable>();
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            // Operand 0 is the destination for everything that has one, except a call, whose operand 0 is
+            // the target and whose return value is operand 1.
+            var destinationIndex = instruction.OpCode is OpCode.Call or OpCode.IndirectCall ? 1 : 0;
+
+            for (var i = 0; i < instruction.Operands.Count; i++)
+            {
+                // A local in destination position is written, not read. A memory operand there is a store
+                // *through* an address, which does read the base that computes it.
+                if (i == destinationIndex && instruction.Operands[i] is LocalVariable)
+                    continue;
+
+                MarkLocalsRead(instruction.Operands[i], stillRead);
+            }
+        }
+
+        folded.ExceptWith(stillRead);
+
+        if (folded.Count == 0)
+            return;
+
+        foreach (var block in method.ControlFlowGraph.Blocks)
+            block.Instructions.RemoveAll(instruction =>
+                instruction.OpCode is OpCode.Add or OpCode.Subtract
+                && instruction.Operands.Count > 0
+                && instruction.Operands[0] is LocalVariable destination
+                && folded.Contains(destination));
+    }
+
+    // Records every local an operand reads, following the ones that nest: a memory operand reads its base
+    // and its index, an address-of reads its target.
+    private static void MarkLocalsRead(IOperand? operand, HashSet<LocalVariable> stillRead)
+    {
+        switch (operand)
+        {
+            case LocalVariable local:
+                stillRead.Add(local);
+                break;
+            case MemoryOperand memory:
+                MarkLocalsRead(memory.Base, stillRead);
+                MarkLocalsRead(memory.Index, stillRead);
+                break;
+            case AddressOf address:
+                MarkLocalsRead(address.Target, stillRead);
+                break;
+        }
+    }
+    /// <summary>
+    /// Types every local that is still unknown and whose every definition is a constant load.
+    /// A local written once as `v = 5` and never stored to a field, passed as an argument or used as a
+    /// receiver has nothing left that could name its type, and a bare constant in that position is an
+    /// integer. Multiple definitions are all checked: one non-constant write and the local is skipped,
+    /// because that write is the one carrying the real type. Dereferenced locals are skipped too - those
+    /// hold addresses (see DereferencedLocals) and a numeric type on them is permanent and wrong.
+    /// </summary>
+    private static bool SeedRemainingConstantLocals(MethodAnalysisContext method, HashSet<LocalVariable> addressed)
+    {
+        Dictionary<LocalVariable, Immediate?>? constantOnly = null;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.Destination is not LocalVariable { Type: null } destination)
+                continue;
+
+            var constant = instruction.OpCode == OpCode.Move && instruction.Operands[1] is Immediate immediate
+                ? immediate
+                : (Immediate?)null;
+
+            constantOnly ??= new Dictionary<LocalVariable, Immediate?>();
+
+            // A second definition that is not a constant load disqualifies the local for good.
+            if (constantOnly.TryGetValue(destination, out var seen))
+                constantOnly[destination] = seen == null ? null : constant;
+            else
+                constantOnly[destination] = constant;
+        }
+
+        if (constantOnly == null)
+            return false;
+
+        var changed = false;
+
+        foreach (var pair in constantOnly)
+        {
+            if (pair.Value is not { } value || addressed.Contains(pair.Key))
+                continue;
+
+            // A constant that does not fit in an int was loaded as a 64-bit value, so keep it one.
+            var type = value.Value is >= int.MinValue and <= int.MaxValue
+                ? method.AppContext.SystemTypes.SystemInt32Type
+                : method.AppContext.SystemTypes.SystemInt64Type;
+
+            changed |= SetTypeIfUnknown(pair.Key, type);
+        }
+
+        return changed;
+    }
+
+    // Diagnostic-only (env CPP2IL_TYPEDIAG=1). Locals still untyped once the fixpoint settles are the single
+    // largest source of unrecoverable output - 63.555 of the 69.548 A4 markers - so tally what defines them.
+    // A dominant entry names the propagation rule that is missing, rather than leaving it to be guessed at.
+    // The second table is the one that maps onto A4: only a local that is *dereferenced* can be the base of
+    // the memory load that emits the marker, so that subset - not the whole population - is what to fix to
+    // remove markers. The whole population is what to fix to remove compile errors on `object`.
+    // Zero cost when off.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> UntypedDefinedBy = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> UntypedBaseDefinedBy = new();
+    private static int _typeDiagHooked;
+
+    private static void ReportUntypedLocalDefinitions(MethodAnalysisContext method, HashSet<LocalVariable> addressed)
+    {
+        if (Environment.GetEnvironmentVariable("CPP2IL_TYPEDIAG") != "1")
+            return;
+
+        if (System.Threading.Interlocked.Exchange(ref _typeDiagHooked, 1) == 0)
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                Console.WriteLine("==== LOCALE FARA TIP, dupa instructiunea care le defineste ====");
+                foreach (var kv in UntypedDefinedBy.OrderByDescending(k => k.Value).Take(20))
+                    Console.WriteLine($"   {kv.Value,9}  {kv.Key}");
+
+                Console.WriteLine("==== dintre ele, DOAR cele dereferentiate (baza A4) ====");
+                foreach (var kv in UntypedBaseDefinedBy.OrderByDescending(k => k.Value).Take(20))
+                    Console.WriteLine($"   {kv.Value,9}  {kv.Key}");
+            };
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.Destination is not LocalVariable { Type: null } destination)
+                continue;
+
+            // Name the source as well as the opcode: a Move from a MemoryOperand and a Move from an
+            // Immediate are different missing rules even though both are a Move.
+            var source = instruction.Operands.Count > 1 && instruction.Operands[1] != null
+                ? instruction.Operands[1].GetType().Name
+                : "-";
+
+            var key = $"{instruction.OpCode} <- {source}";
+            UntypedDefinedBy.AddOrUpdate(key, 1, (_, v) => v + 1);
+
+            if (addressed.Contains(destination))
+                UntypedBaseDefinedBy.AddOrUpdate(key, 1, (_, v) => v + 1);
         }
     }
 
@@ -390,6 +698,14 @@ public static class LocalVariables
         if (type == null || local.Type != null)
             return false;
 
+        // Set only during the constant fallback: nothing inferred from a bare constant may reach a local
+        // that is dereferenced somewhere. Those hold addresses, so a number there is not a missing type but
+        // a wrong one - strictly worse, because the field lookup then runs against System.Int32 and fails
+        // for good instead of staying recoverable. Copies (Move, Phi) are how it would leak, and they
+        // deliberately do not consult `addressed` themselves, so the block lives here where every rule meets.
+        if (_blockedFromTyping != null && _blockedFromTyping.Contains(local))
+            return false;
+
         local.Type = type;
         return true;
     }
@@ -437,6 +753,11 @@ public static class LocalVariables
                     break;
                 case OpCode.Add or OpCode.Subtract or OpCode.Multiply:
                     changed |= PropagateArithmetic(instruction, method, addressed);
+                    // Off by default: add/sub/mul on a pointer is address arithmetic, and a wrong numeric
+                    // type is permanent, so this is opt-in until measured. The `addressed` guard already
+                    // excludes every local that is dereferenced, which is most of the address arithmetic.
+                    if (IntegerArithmetic)
+                        changed |= PropagateIntegerResult(instruction, method, addressed);
                     break;
                 case OpCode.Divide or OpCode.Modulo:
                     changed |= PropagateArithmetic(instruction, method, addressed) || PropagateIntegerResult(instruction, method, addressed);
@@ -471,8 +792,9 @@ public static class LocalVariables
         return addressed;
     }
 
-    // A local assigned a float/double literal (a lifted rodata constant load) is that float type
-    private static void SeedFloatLiterals(MethodAnalysisContext method)
+    // A local assigned a literal is that literal.s type: a float/double (a lifted rodata constant load),
+    // or a string literal, which is unambiguously System.String and needs no inference at all.
+    private static void SeedLiterals(MethodAnalysisContext method)
     {
         foreach (var instruction in method.ControlFlowGraph!.Instructions)
         {
@@ -483,6 +805,7 @@ public static class LocalVariables
             {
                 FloatLiteral => method.AppContext.SystemTypes.SystemSingleType,
                 DoubleLiteral => method.AppContext.SystemTypes.SystemDoubleType,
+                StringLiteral => method.AppContext.SystemTypes.SystemStringType,
                 _ => destination.Type,
             };
         }
@@ -512,11 +835,27 @@ public static class LocalVariables
         if (addressed.Contains(destination))
             return false;
 
+        var sawImmediate = false;
+
         for (var i = 1; i < instruction.Operands.Count; i++)
-            if (IntegerResultType(instruction.Operands[i], method) is { } integerType)
+        {
+            var operand = instruction.Operands[i];
+
+            if (IntegerResultType(operand, method) is { } integerType)
                 return SetTypeIfUnknown(destination, integerType);
 
-        return false;
+            // An operand with a known type that is not an integer means this is not integer maths at all -
+            // it is address arithmetic, float maths or a flag test - so the constant below must not claim it.
+            if (operand is LocalVariable { Type: not null })
+                return false;
+
+            sawImmediate |= operand is Immediate;
+        }
+
+        // No operand carried a type, but one was a literal constant. Maths against a constant is integer
+        // maths unless another operand said otherwise, and none did - the loop above would have returned.
+        // This is what types the long tail of `x = y & 0xff` / `x = y >> 2` whose input never got a type.
+        return sawImmediate && SetTypeIfUnknown(destination, method.AppContext.SystemTypes.SystemInt32Type);
     }
 
     private static TypeAnalysisContext? IntegerResultType(IOperand operand, MethodAnalysisContext method)
