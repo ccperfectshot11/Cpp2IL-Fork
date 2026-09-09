@@ -186,7 +186,12 @@ internal static class Program
             // Swallowing this hides the reason a whole assembly produced no measurement at all, which
             // looks identical to a clean run of zero methods in the summary.
             Interlocked.Increment(ref asmDecompileErrors);
-            Console.Error.WriteLine($"  !! {Path.GetFileNameWithoutExtension(dll)}: {ex.GetType().Name}: {ex.Message}");
+            var innermost = ex;
+            while (innermost is AggregateException { InnerExceptions.Count: > 0 } agg) innermost = agg.InnerExceptions[0];
+            while (innermost.InnerException is { } deeper) innermost = deeper;
+
+            Console.Error.WriteLine($"  !! {Path.GetFileNameWithoutExtension(dll)}: {innermost.GetType().Name}: {innermost.Message}");
+            Console.Error.WriteLine(innermost.StackTrace);
         }
     }
 

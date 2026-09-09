@@ -33,6 +33,26 @@ public static class IlGenerator
             [appContext.SystemTypes.SystemStringType]);
     }
 
+    /// <summary>
+    /// True for the single instance field a primitive struct stores itself in - System.Int32::m_value and
+    /// friends. Its type is the primitive itself, which no user-defined struct can claim, so the test does
+    /// not catch a real field. String and object are excluded: their internal fields hold something other
+    /// than the value (length, sync block) and dropping a read of them would change what the code does.
+    /// </summary>
+    private static bool IsPrimitiveBackingField(FieldAnalysisContext field)
+    {
+        if (field.IsStatic)
+            return false;
+
+        if (field.DeclaringType.ToTypeSignature() is not CorLibTypeSignature { ElementType: var owner })
+            return false;
+
+        if (owner is AsmResolver.PE.DotNet.Metadata.Tables.ElementType.String or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Object)
+            return false;
+
+        return field.FieldType.ToTypeSignature() is CorLibTypeSignature { ElementType: var value } && value == owner;
+    }
+
     public static void GenerateIl(MethodAnalysisContext context, MethodDefinition definition)
     {
         var assembly = context.DeclaringType!.DeclaringAssembly;
@@ -728,7 +748,12 @@ public static class IlGenerator
                 }
 
                 LoadLocal(field.Local, method, locals);
-                instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor());
+
+                // Reading System.Int32::m_value off an int is how il2cpp stores the value, but in C# the
+                // local already IS the value, and the field is not accessible - the decompiled source gets
+                // CS1061. The load is a no-op, so emit nothing for it.
+                if (!IsPrimitiveBackingField(field.Field))
+                    instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor());
 
                 // a.b.c: keep reading into the value-type field that was loaded
                 foreach (var nested in field.InnerPath)
