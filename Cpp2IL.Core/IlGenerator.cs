@@ -309,6 +309,13 @@ public static class IlGenerator
         {
             foreach (var ilLocal in body.LocalVariables)
             {
+                // Not a managed pointer: `initobj byte&` is legal IL but has no C# form, and the decompiler
+                // renders it as `ref byte ptr = default(ref byte);` - invalid twice over, and by volume the
+                // biggest syntax problem in the output (1,907 occurrences, and with it the whole
+                // CS8172/CS1510/CS1073 family). A byref has nothing meaningful to be zeroed to anyway.
+                if (ilLocal.VariableType is ByReferenceTypeSignature)
+                    continue;
+
                 body.Instructions.Add(CilOpCodes.Ldloca, ilLocal);
                 body.Instructions.Add(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef());
             }
