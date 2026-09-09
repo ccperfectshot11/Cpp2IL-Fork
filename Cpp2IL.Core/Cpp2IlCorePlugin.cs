@@ -58,6 +58,7 @@ public class Cpp2IlCorePlugin : Cpp2IlPlugin
         ProcessingLayerRegistry.Register<CallAnalysisProcessingLayer>();
         ProcessingLayerRegistry.Register<NativeMethodDetectionProcessingLayer>();
         ProcessingLayerRegistry.Register<StableRenamingProcessingLayer>();
+        ProcessingLayerRegistry.Register<PublicizerProcessingLayer>();
         ProcessingLayerRegistry.Register<DeobfuscationMapProcessingLayer>();
 
         var elapsed = DateTime.Now - start;
