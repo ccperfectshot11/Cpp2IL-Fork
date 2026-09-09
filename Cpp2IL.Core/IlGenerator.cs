@@ -28,6 +28,13 @@ public static class IlGenerator
     /// </summary>
     public static readonly bool SkipHelpersType = Environment.GetEnvironmentVariable("CPP2IL_NO_HELPERS") == "1";
 
+    /// <summary>
+    /// Emits an explicit initobj per local at method entry. The runtime already zeroes them because
+    /// InitializeLocals is set, but the decompiled C# cannot prove it and every read becomes CS0165.
+    /// Costs about 22% more output, so it is only worth it when the output is meant to be recompiled.
+    /// </summary>
+    public static readonly bool InitialiseLocals = Environment.GetEnvironmentVariable("CPP2IL_INIT_LOCALS") == "1";
+
     public static void InjectHelpersType(ApplicationAnalysisContext appContext)
     {
         if (SkipHelpersType)
@@ -283,6 +290,22 @@ public static class IlGenerator
             var ilLocal = new CilLocalVariable(ilType);
             body.LocalVariables.Add(ilLocal);
             locals.Add(local, ilLocal);
+        }
+
+        // The runtime already zeroes these because InitializeLocals is set, but the decompiled C# declares
+        // them without an initialiser and the compiler cannot prove assignment across recovered control
+        // flow, so every read becomes CS0165 - thousands of methods, over obj, obj2, num, flag and the rest.
+        // An explicit initobj at entry states what already happens at runtime, which costs two instructions
+        // per local and changes nothing about behaviour.
+        // Off by default because it costs two instructions per local, about 22% more output, which buys
+        // nothing for a run meant to be read rather than recompiled.
+        if (InitialiseLocals)
+        {
+            foreach (var ilLocal in body.LocalVariables)
+            {
+                body.Instructions.Add(CilOpCodes.Ldloca, ilLocal);
+                body.Instructions.Add(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef());
+            }
         }
 
         /* foreach (var instruction in context.ControlFlowGraph!.Instructions)
