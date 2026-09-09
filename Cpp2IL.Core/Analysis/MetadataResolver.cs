@@ -17,6 +17,8 @@ internal static class FieldDiag
 {
     public static readonly bool Enabled = System.Environment.GetEnvironmentVariable("CPP2IL_FIELDDIAG") == "1";
     private static long _candidates, _resolved, _failValueTypeBase, _failBeyondLayout, _failNoExactMatch, _failGenericVt;
+    private static long _failEmptyLayout, _failEmptyOnlyNoBackingData;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> EmptyLayoutOwners = new();
     private static int _hooked;
 
     private static void EnsureDump()
@@ -31,6 +33,10 @@ internal static class FieldDiag
                 System.Console.WriteLine($"  FAIL beyond layout    : {_failBeyondLayout}");
                 System.Console.WriteLine($"  FAIL no exact match   : {_failNoExactMatch}");
                 System.Console.WriteLine($"  FAIL generic vt skip  : {_failGenericVt}");
+                System.Console.WriteLine($"  FAIL empty layout     : {_failEmptyLayout}  (of which some field lacked BackingData: {_failEmptyOnlyNoBackingData})");
+                System.Console.WriteLine("  -- top 15 owner types with an empty layout --");
+                foreach (var kv in EmptyLayoutOwners.OrderByDescending(k => k.Value).Take(15))
+                    System.Console.WriteLine($"     {kv.Value,8}  {kv.Key}");
                 System.Console.WriteLine("  -- delta to nearest lower field (0x1000 = >0x200 / beyond layout) --");
                 foreach (var kv in DeltaToNearestField.OrderByDescending(k => k.Value).Take(20))
                     System.Console.WriteLine($"     delta 0x{kv.Key:X4} : {kv.Value}");
@@ -50,13 +56,34 @@ internal static class FieldDiag
 
         long maxOffset = -1;
         long nearestBelow = -1;
+        var usableFields = 0;
+        var skippedNoBackingData = 0;
+
         for (var t = owner; t != null; t = t.BaseType)
             foreach (var f in t.Fields)
-                if (!f.IsStatic && f.BackingData is { } bd)
+            {
+                if (f.IsStatic) continue;
+
+                if (f.BackingData is not { } bd)
                 {
-                    if (bd.FieldOffset > maxOffset) maxOffset = bd.FieldOffset;
-                    if (bd.FieldOffset <= addend && bd.FieldOffset > nearestBelow) nearestBelow = bd.FieldOffset;
+                    skippedNoBackingData++;
+                    continue;
                 }
+
+                usableFields++;
+                if (bd.FieldOffset > maxOffset) maxOffset = bd.FieldOffset;
+                if (bd.FieldOffset <= addend && bd.FieldOffset > nearestBelow) nearestBelow = bd.FieldOffset;
+            }
+
+        // A base whose whole inheritance chain contributes no usable field offset can never match, so the
+        // offset is reported as "beyond layout" regardless of how sound it is. Separate those out, and
+        // note whether the fields were absent or merely skipped for want of BackingData.
+        if (usableFields == 0)
+        {
+            System.Threading.Interlocked.Increment(ref _failEmptyLayout);
+            if (skippedNoBackingData > 0) System.Threading.Interlocked.Increment(ref _failEmptyOnlyNoBackingData);
+            EmptyLayoutOwners.AddOrUpdate(owner.FullName ?? "?", 1, (_, v) => v + 1);
+        }
 
         // Delta from the accessed offset down to the closest real field. 0 would be an exact hit (so
         // it never reaches here); a constant delta of 0x10 is the object header; small varying positive

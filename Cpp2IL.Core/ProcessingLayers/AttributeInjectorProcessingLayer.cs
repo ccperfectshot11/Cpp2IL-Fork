@@ -32,7 +32,7 @@ public class AttributeInjectorProcessingLayer : Cpp2IlProcessingLayer
 
     private static void InjectFieldOffsetAttribute(ApplicationAnalysisContext appContext)
     {
-        var fieldOffsetAttributes = appContext.InjectTypeIntoAllAssemblies("Cpp2ILInjected", "FieldOffsetAttribute", appContext.SystemTypes.SystemAttributeType);
+        var fieldOffsetAttributes = appContext.InjectTypeIntoSharedAssembly("Cpp2ILInjected", "FieldOffsetAttribute", appContext.SystemTypes.SystemAttributeType);
 
         var offsetFields = fieldOffsetAttributes.InjectFieldToAllAssemblies("Offset", appContext.SystemTypes.SystemStringType, FieldAttributes.Public);
 
@@ -60,7 +60,7 @@ public class AttributeInjectorProcessingLayer : Cpp2IlProcessingLayer
 
     private static void InjectAddressAttribute(ApplicationAnalysisContext appContext)
     {
-        var addressAttributes = appContext.InjectTypeIntoAllAssemblies("Cpp2ILInjected", "AddressAttribute", appContext.SystemTypes.SystemAttributeType);
+        var addressAttributes = appContext.InjectTypeIntoSharedAssembly("Cpp2ILInjected", "AddressAttribute", appContext.SystemTypes.SystemAttributeType);
 
         var rvaFields = addressAttributes.InjectFieldToAllAssemblies("RVA", appContext.SystemTypes.SystemStringType, FieldAttributes.Public);
         var offsetFields = addressAttributes.InjectFieldToAllAssemblies("Offset", appContext.SystemTypes.SystemStringType, FieldAttributes.Public);
@@ -98,7 +98,7 @@ public class AttributeInjectorProcessingLayer : Cpp2IlProcessingLayer
 
     private static void InjectTokenAttribute(ApplicationAnalysisContext appContext)
     {
-        var tokenAttributes = appContext.InjectTypeIntoAllAssemblies("Cpp2ILInjected", "TokenAttribute", appContext.SystemTypes.SystemAttributeType);
+        var tokenAttributes = appContext.InjectTypeIntoSharedAssembly("Cpp2ILInjected", "TokenAttribute", appContext.SystemTypes.SystemAttributeType);
 
         var tokenFields = tokenAttributes.InjectFieldToAllAssemblies("Token", appContext.SystemTypes.SystemStringType, FieldAttributes.Public);
 
@@ -150,7 +150,7 @@ public class AttributeInjectorProcessingLayer : Cpp2IlProcessingLayer
             return;
         }
 
-        var attributeAttributes = appContext.InjectTypeIntoAllAssemblies("Cpp2ILInjected", "AttributeAttribute", appContext.SystemTypes.SystemAttributeType);
+        var attributeAttributes = appContext.InjectTypeIntoSharedAssembly("Cpp2ILInjected", "AttributeAttribute", appContext.SystemTypes.SystemAttributeType);
 
         var attributeTypeFields = attributeAttributes.InjectFieldToAllAssemblies("Type", appContext.SystemTypes.SystemTypeType, FieldAttributes.Public);
         var attributeRvaFields = attributeAttributes.InjectFieldToAllAssemblies("RVA", appContext.SystemTypes.SystemStringType, FieldAttributes.Public);

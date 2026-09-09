@@ -352,5 +352,45 @@ public class ApplicationAnalysisContext : ContextWithDataStorage
         return assembly;
     }
 
+    public const string SharedInjectedAssemblyName = "Cpp2ILInjected";
+
+    private InjectedAssemblyAnalysisContext? _sharedInjectedAssembly;
+
+    /// <summary>
+    /// Injects a type once, into a single assembly that every other output assembly can reference, rather
+    /// than emitting a copy of it into all of them. Referencing several outputs together then no longer
+    /// produces a CS0433 ambiguity on the injected name, which otherwise fires for every use of it.
+    /// The returned handle still answers per-assembly lookups, so callers need no changes.
+    /// </summary>
+    /// <summary>
+    /// Off by default: the shared assembly is written and referenced correctly, but the NetSpy/ILSpy
+    /// decompiler used for measurement throws a NullReferenceException on assemblies that carry the
+    /// cross-assembly reference, so the whole pipeline stops reporting. Enable with CPP2IL_SHARED_INJECTED=1
+    /// to continue on it without disturbing runs that need a working measurement.
+    /// </summary>
+    public static readonly bool UseSharedInjectedAssembly = Environment.GetEnvironmentVariable("CPP2IL_SHARED_INJECTED") == "1";
+
+    public MultiAssemblyInjectedType InjectTypeIntoSharedAssembly(string ns, string name, TypeAnalysisContext? baseType, TypeAttributes typeAttributes = TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed)
+    {
+        if (!UseSharedInjectedAssembly)
+            return InjectTypeIntoAllAssemblies(ns, name, baseType, typeAttributes);
+
+        if (_sharedInjectedAssembly == null)
+        {
+            // Pinned to an explicit version so every referencing assembly emits an identical
+            // AssemblyReference; differing references would reintroduce the very ambiguity this avoids.
+            _sharedInjectedAssembly = InjectAssembly(SharedInjectedAssemblyName, new Version(1, 0, 0, 0));
+
+            // InjectAssembly appends, but the writer walks Assemblies in order and the other 150 reference
+            // this one, so it has to be built first.
+            Assemblies.Remove(_sharedInjectedAssembly);
+            Assemblies.Insert(0, _sharedInjectedAssembly);
+        }
+
+        var type = (InjectedTypeAnalysisContext)_sharedInjectedAssembly.InjectType(ns, name, baseType, typeAttributes);
+
+        return new([type], Assemblies.ToArray());
+    }
+
     public IEnumerable<TypeAnalysisContext> AllTypes => Assemblies.SelectMany(a => a.Types);
 }

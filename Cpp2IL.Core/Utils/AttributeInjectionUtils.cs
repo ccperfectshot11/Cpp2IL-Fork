@@ -17,14 +17,14 @@ public static class AttributeInjectionUtils
     /// <returns>A dictionary of assembly contexts to their inject attribute constructors.</returns>
     public static Dictionary<AssemblyAnalysisContext, InjectedMethodAnalysisContext> InjectZeroParameterAttribute(ApplicationAnalysisContext appContext, string ns, string name, AttributeTargets attributeTargets, bool allowMultiple)
     {
-        var multiInjectType = appContext.InjectTypeIntoAllAssemblies(ns, name, appContext.SystemTypes.SystemAttributeType);
+        var multiInjectType = appContext.InjectTypeIntoSharedAssembly(ns, name, appContext.SystemTypes.SystemAttributeType);
         ApplyAttributeUsageAttribute(appContext, multiInjectType, attributeTargets, allowMultiple);
         return multiInjectType.InjectConstructor(false);
     }
 
     public static Dictionary<AssemblyAnalysisContext, (InjectedMethodAnalysisContext, InjectedFieldAnalysisContext)> InjectOneParameterAttribute(ApplicationAnalysisContext appContext, string ns, string name, AttributeTargets attributeTargets, bool allowMultiple, TypeAnalysisContext fieldType, string fieldName)
     {
-        var multiInjectType = appContext.InjectTypeIntoAllAssemblies(ns, name, appContext.SystemTypes.SystemAttributeType);
+        var multiInjectType = appContext.InjectTypeIntoSharedAssembly(ns, name, appContext.SystemTypes.SystemAttributeType);
         ApplyAttributeUsageAttribute(appContext, multiInjectType, attributeTargets, allowMultiple);
 
         var fields = multiInjectType.InjectFieldToAllAssemblies(fieldName, fieldType, FieldAttributes.Public);
@@ -36,7 +36,7 @@ public static class AttributeInjectionUtils
 
     public static Dictionary<AssemblyAnalysisContext, (InjectedMethodAnalysisContext, InjectedFieldAnalysisContext, InjectedFieldAnalysisContext)> InjectTwoParameterAttribute(ApplicationAnalysisContext appContext, string ns, string name, AttributeTargets attributeTargets, bool allowMultiple, TypeAnalysisContext fieldType1, string fieldName1, TypeAnalysisContext fieldType2, string fieldName2)
     {
-        var multiInjectType = appContext.InjectTypeIntoAllAssemblies(ns, name, appContext.SystemTypes.SystemAttributeType);
+        var multiInjectType = appContext.InjectTypeIntoSharedAssembly(ns, name, appContext.SystemTypes.SystemAttributeType);
         ApplyAttributeUsageAttribute(appContext, multiInjectType, attributeTargets, allowMultiple);
 
         var firstFields = multiInjectType.InjectFieldToAllAssemblies(fieldName1, fieldType1, FieldAttributes.Public);
@@ -53,7 +53,7 @@ public static class AttributeInjectionUtils
 
     public static Dictionary<AssemblyAnalysisContext, (InjectedMethodAnalysisContext, InjectedFieldAnalysisContext, InjectedFieldAnalysisContext, InjectedFieldAnalysisContext)> InjectThreeParameterAttribute(ApplicationAnalysisContext appContext, string ns, string name, AttributeTargets attributeTargets, bool allowMultiple, TypeAnalysisContext fieldType1, string fieldName1, TypeAnalysisContext fieldType2, string fieldName2, TypeAnalysisContext fieldType3, string fieldName3)
     {
-        var multiInjectType = appContext.InjectTypeIntoAllAssemblies(ns, name, appContext.SystemTypes.SystemAttributeType);
+        var multiInjectType = appContext.InjectTypeIntoSharedAssembly(ns, name, appContext.SystemTypes.SystemAttributeType);
         ApplyAttributeUsageAttribute(appContext, multiInjectType, attributeTargets, allowMultiple);
 
         var firstFields = multiInjectType.InjectFieldToAllAssemblies(fieldName1, fieldType1, FieldAttributes.Public);
@@ -72,7 +72,7 @@ public static class AttributeInjectionUtils
 
     public static Dictionary<AssemblyAnalysisContext, (InjectedMethodAnalysisContext, InjectedFieldAnalysisContext[])> InjectAttribute(ApplicationAnalysisContext appContext, string ns, string name, AttributeTargets attributeTargets, bool allowMultiple, params (TypeAnalysisContext, string)[] fields)
     {
-        var multiInjectType = appContext.InjectTypeIntoAllAssemblies(ns, name, appContext.SystemTypes.SystemAttributeType);
+        var multiInjectType = appContext.InjectTypeIntoSharedAssembly(ns, name, appContext.SystemTypes.SystemAttributeType);
         ApplyAttributeUsageAttribute(appContext, multiInjectType, attributeTargets, allowMultiple);
 
         var injectedFields = new Dictionary<AssemblyAnalysisContext, InjectedFieldAnalysisContext>[fields.Length];

@@ -22,6 +22,7 @@ internal static class Program
 {
     private static string[] _allDlls;
     private static readonly Dictionary<string, MetadataReference> _refCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly bool ExcludeSelf = Environment.GetEnvironmentVariable("CPP2IL_CC_EXCLUDE_SELF") == "1";
 
     // recompilation
     private static long methodsTotal, methodsOk, mfTotal, mfOk, classLevelErrors, asmDecompileErrors, oomBatches;
@@ -141,7 +142,12 @@ internal static class Program
         // from the own-DLL metadata, while the source types shadow their metadata twins (CS0436, a
         // warning we ignore). This lets a huge assembly compile in memory-bounded batches instead of
         // binding all its methods at once - which spiked to ~9 GB and could take the machine down.
-        var refs = _refCache.Values.ToList();
+        // CPP2IL_CC_EXCLUDE_SELF=1 drops the assembly being compiled from its own reference set, the way a
+        // real project builds. It costs the batching trick above, so types from other batches of the same
+        // assembly stop resolving - measure both ways rather than assuming which is more honest.
+        var refs = ExcludeSelf
+            ? _refCache.Where(kv => !string.Equals(kv.Key, dll, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Value).ToList()
+            : _refCache.Values.ToList();
 
         // STREAM: decompile straight into a batch buffer and compile+release each batch as it fills,
         // so even mscorlib (thousands of types) never holds more than one batch of source in memory.
@@ -175,7 +181,13 @@ internal static class Program
             });
             Flush();
         }
-        catch { Interlocked.Increment(ref asmDecompileErrors); }
+        catch (Exception ex)
+        {
+            // Swallowing this hides the reason a whole assembly produced no measurement at all, which
+            // looks identical to a clean run of zero methods in the summary.
+            Interlocked.Increment(ref asmDecompileErrors);
+            Console.Error.WriteLine($"  !! {Path.GetFileNameWithoutExtension(dll)}: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private const int BatchSize = 800;

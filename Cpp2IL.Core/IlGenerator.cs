@@ -20,7 +20,7 @@ public static class IlGenerator
 
     public static void InjectHelpersType(ApplicationAnalysisContext appContext)
     {
-        var helpersType = appContext.InjectTypeIntoAllAssemblies(
+        var helpersType = appContext.InjectTypeIntoSharedAssembly(
             HelpersNamespace,
             HelpersTypeName,
             null,
@@ -39,11 +39,18 @@ public static class IlGenerator
         var module = definition.DeclaringModule!;
         var factory = module.CorLibTypeFactory;
 
-        var noteIssueContext = assembly
+        // The helper now lives in one shared assembly rather than a copy per assembly, so look there first
+        // and fall back to a local copy for runs that still inject per-assembly. Without this the lookup
+        // silently misses and every marker degrades into a Console.WriteLine.
+        var helpersHost = assembly.AppContext.AssembliesByName.GetValueOrDefault(ApplicationAnalysisContext.SharedInjectedAssemblyName) ?? assembly;
+
+        var noteIssueContext = helpersHost
             .GetTypeByFullName($"{HelpersNamespace}.{HelpersTypeName}")?.Methods.FirstOrDefault(m => m.Name == NoteIssueMethodName);
 
         var writeLine = noteIssueContext != null
-            ? noteIssueContext.ToMethodDescriptor()
+            // A definition from another module cannot be called directly; importing turns it into a member
+            // reference carrying the assembly reference. Same-module definitions pass through unchanged.
+            ? module.DefaultImporter.ImportMethod(noteIssueContext.ToMethodDescriptor())
             : factory.CorLibScope
                 .CreateTypeReference("System", "Console")
                 .CreateMemberReference("WriteLine", MethodSignature.CreateStatic(factory.Void, [factory.String]));
