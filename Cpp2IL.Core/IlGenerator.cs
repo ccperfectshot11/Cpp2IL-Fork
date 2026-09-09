@@ -210,7 +210,9 @@ public static class IlGenerator
         // The helper now lives in one shared assembly rather than a copy per assembly, so look there first
         // and fall back to a local copy for runs that still inject per-assembly. Without this the lookup
         // silently misses and every marker degrades into a Console.WriteLine.
-        var helpersHost = assembly.AppContext.AssembliesByName.GetValueOrDefault(ApplicationAnalysisContext.SharedInjectedAssemblyName) ?? assembly;
+        var helpersHost = assembly.AppContext.AssembliesByName.TryGetValue(ApplicationAnalysisContext.SharedInjectedAssemblyName, out var sharedHost)
+            ? sharedHost
+            : assembly;
 
         var noteIssueContext = helpersHost
             .GetTypeByFullName($"{HelpersNamespace}.{HelpersTypeName}")?.Methods.FirstOrDefault(m => m.Name == NoteIssueMethodName);
