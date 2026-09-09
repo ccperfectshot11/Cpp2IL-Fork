@@ -15,19 +15,29 @@ public class AttributeInjectorProcessingLayer : Cpp2IlProcessingLayer
     public override string Id => "attributeinjector";
 
     private static bool _useEzDiffMode;
+    private static bool _dropLocationAttributes;
 
     public override void Process(ApplicationAnalysisContext appContext, Action<int, int>? progressCallback = null)
     {
         //EZ diff mode removes token attributes and method address/rva fields to make diffing using e.g. git easier
         _useEzDiffMode = appContext.GetExtraData<string>("attr-injector-use-ez-diff") != null;
 
+        // ez-diff only empties the RVA and offset fields: the Address and FieldOffset types are still injected
+        // into every assembly, so each name keeps its 149 twins and CS0433 goes on killing whole types. An
+        // output meant to be recompiled wants them gone entirely, while one meant for tracing back to the
+        // binary wants them kept, so this gets a flag of its own rather than riding on ez-diff.
+        _dropLocationAttributes = appContext.GetExtraData<string>("attr-injector-drop-address") != null;
+
         InjectAttributeAttribute(appContext);
 
         if (!_useEzDiffMode)
             InjectTokenAttribute(appContext);
 
-        InjectAddressAttribute(appContext);
-        InjectFieldOffsetAttribute(appContext);
+        if (!_dropLocationAttributes)
+        {
+            InjectAddressAttribute(appContext);
+            InjectFieldOffsetAttribute(appContext);
+        }
     }
 
     private static void InjectFieldOffsetAttribute(ApplicationAnalysisContext appContext)
