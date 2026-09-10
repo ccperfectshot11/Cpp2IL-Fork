@@ -1,26 +1,27 @@
 using System;
 using System.Collections.Generic;
-using Cpp2IL.VerifyCore;
 
-namespace Cpp2IL.VerifyMod;
+
+namespace Cpp2IL.VerifyCore;
 
 /// <summary>
 /// Reads back what Phase 1 wrote: the plan, and the keys of the methods worth comparing.
 ///
-/// Hand-rolled for the same reason <see cref="SignatureJson"/> is written by hand - this has to run
+/// Lives beside SignatureJson because the format is the contract between the two phases, so the reader
+/// belongs next to the writer - and because Phase 2 runs
 /// inside MelonLoader's runtime with no package references. It only reads the handful of scalar fields
 /// the comparison needs, and it reads them by scanning for the field name rather than by parsing JSON
 /// properly, which is enough for a document this code also wrote.
 /// </summary>
-internal static class Phase1File
+public static class Phase1File
 {
-    internal sealed class Request
+    public sealed class Request
     {
-        internal FuzzPlan Plan = new FuzzPlan();
-        internal List<string> Keys = new List<string>();
+        public FuzzPlan Plan = new FuzzPlan();
+        public List<string> Keys = new List<string>();
     }
 
-    internal static Request Read(string json)
+    public static Request Read(string json)
     {
         var request = new Request
         {

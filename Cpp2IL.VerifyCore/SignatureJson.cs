@@ -44,6 +44,11 @@ public static class SignatureJson
             builder.Append(", \"allThrew\": ").Append(r.AllThrew ? "true" : "false");
             builder.Append(", \"abortedAfter\": ").Append(r.AbortedAfter.ToString(CultureInfo.InvariantCulture));
             builder.Append(", \"constantOutput\": ").Append(r.ConstantOutput ? "true" : "false");
+            builder.Append(", \"instance\": ").Append(r.IsInstance ? "true" : "false");
+            builder.Append(", \"receiverType\": ").Append(Quote(r.ReceiverType));
+            builder.Append(", \"mutatesReceiver\": ").Append(r.MutatesReceiver ? "true" : "false");
+            builder.Append(", \"mutatedCount\": ").Append(r.MutatedCount.ToString(CultureInfo.InvariantCulture));
+            builder.Append(", \"noObservableOutput\": ").Append(r.NoObservableOutput ? "true" : "false");
             builder.Append(", \"readsStatics\": ").Append(r.ReadsStatics ? "true" : "false");
             builder.Append(", \"elapsedMs\": ").Append(r.ElapsedMs.ToString(CultureInfo.InvariantCulture));
             builder.Append(", \"failure\": ").Append(Quote(r.Failure));
@@ -66,7 +71,6 @@ public static class SignatureJson
         writer.WriteLine("  ]");
         writer.WriteLine("}");
     }
-
 
     // A single result on one line, for the partial-results file a run appends to as it goes. Deliberately
     // not the document format above: that one is a whole JSON object and cannot be appended to, and this

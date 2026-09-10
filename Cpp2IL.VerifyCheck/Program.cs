@@ -19,7 +19,10 @@ namespace Cpp2IL.VerifyCheck;
 // FPMath.Sin is a desync in a lockstep game, not a warning in a build log.
 //
 // The instrument is a signature: pick the methods that are self-contained enough to call, feed each one
-// the same deterministic flood of inputs, and hash every input/output pair into one digest. Phase 1
+// the same deterministic flood of inputs, and hash every input/output pair into one digest. Tier 2 adds
+// the instance methods of primitive-only structs to that set - a receiver is one more value to generate
+// from the seed, and since a struct method can write through it, the receiver is hashed on the way in
+// AND on the way out. Phase 1
 // (this program) produces that digest from Cpp2IL's output. Phase 2 produces it from the real native
 // method inside the running game - see README.md - and the diff of the two files is the verification.
 // A signature on its own proves nothing except that the method is a function; it is the COMPARISON that
@@ -53,6 +56,9 @@ internal static class Program
 
             return Compare(args[1], args[2]);
         }
+
+        if (args.Length >= 2 && args[0] == "--check-phase1")
+            return CheckPhase1(args[1]);
 
         if (args.Length < 1 || args[0].StartsWith("--"))
         {
@@ -114,7 +120,10 @@ internal static class Program
     // the tool exists: Quantum is lockstep-deterministic, so "close enough" is not a category there -
     // one raw unit of difference in FPMath.Sin desyncs a match. If bit-exact comparison is legitimate
     // anywhere in a game, it is here.
-    private static readonly string[] QuantumTypes = ["FP", "FPMath", "FPVector2", "FPVector3", "FPQuaternion"];
+    private static readonly string[] QuantumTypes =
+    [
+        "FP", "FPMath", "FPVector2", "FPVector3", "FPQuaternion", "FPMatrix2x2", "FPMatrix3x3", "FPMatrix4x4",
+    ];
 
     private static void ReportSelection(SelectionResult selection, Stopwatch watch)
     {
@@ -125,13 +134,25 @@ internal static class Program
         Console.WriteLine($"DLLs scanned               : {selection.DllsScanned:N0}   (unreadable: {selection.DllsUnreadable})");
         Console.WriteLine($"Methods with a body        : {selection.MethodsWithBody:N0}");
         Console.WriteLine($"  body-safe (own checks)   : {selection.All.Count(c => c.BodySafe):N0}  ({P(selection.All.Count(c => c.BodySafe), selection.MethodsWithBody):F2}%)");
-        Console.WriteLine($"SELECTED (fuzzable)        : {selection.Selected.Count:N0}  ({P(selection.Selected.Count, selection.MethodsWithBody):F3}%)   <== static, primitive-only, closed call graph");
-        Console.WriteLine($"  of those, read statics   : {selection.Selected.Count(c => c.ReadsStatics):N0}");
+        Console.WriteLine($"SELECTED (fuzzable)        : {selection.Selected.Count:N0}  ({P(selection.Selected.Count, selection.MethodsWithBody):F3}%)   <== primitive-only, closed call graph");
+        Console.WriteLine($"  static                   : {selection.Selected.Count(c => c.IsStatic):N0}");
+        Console.WriteLine($"  INSTANCE (Tier 2)        : {selection.Selected.Count(c => !c.IsStatic):N0}   <== receiver is a primitive-only struct, generated like an argument");
+        Console.WriteLine($"    of those, void         : {selection.Selected.Count(c => !c.IsStatic && c.ReturnsVoid):N0}   (the receiver after the call is the only output they have)");
+        Console.WriteLine($"  of those, read statics   : {selection.Selected.Count(c => c.ReadsStatics):N0} own body, {selection.Selected.Count(c => c.ReadsStaticsTransitively):N0} counting callees");
         Console.WriteLine($"  static-only whitelist    : {selection.SelectedStaticOnly:N0}   (the literal reading: instance helpers not allowed even as callees)");
         Console.WriteLine();
         Console.WriteLine("-- why the rest were dropped (first failing check) --");
         foreach (var kv in selection.DropReasons.OrderByDescending(k => k.Value).Take(15))
             Console.WriteLine($"  {kv.Key,-46} {kv.Value,10:N0}");
+
+        Console.WriteLine();
+        Console.WriteLine($"-- receiver types of the {selection.Selected.Count(c => !c.IsStatic):N0} selected INSTANCE methods (top 20) --");
+        foreach (var group in selection.Selected.Where(c => !c.IsStatic).GroupBy(c => c.ReceiverTypeName).OrderByDescending(g => g.Count()).Take(20))
+            Console.WriteLine($"  {group.Count(),6:N0}  {group.Key}");
+
+        // The size of Tier 2's other half, so the next decision is made on a number rather than on a
+        // hunch: what a heap receiver would buy, if a recovered constructor were trusted to build one.
+        Console.WriteLine($"  (instance methods on CLASSES that a parameterless ctor and primitive-only fields would make eligible: {selection.ClassReceiverCandidates:N0})");
 
         Console.WriteLine();
         Console.WriteLine("-- selected methods by declaring type (top 25) --");
@@ -261,7 +282,7 @@ internal static class Program
 
             result.Assembly = candidate.AssemblyName;
             result.Token = "0x" + candidate.Token.ToString("X8");
-            result.ReadsStatics = candidate.ReadsStatics;
+            result.ReadsStatics = candidate.ReadsStaticsTransitively;
             if (string.IsNullOrEmpty(result.Type))
                 result.Type = candidate.TypeName;
 
@@ -353,6 +374,9 @@ internal static class Program
         Console.WriteLine($"    of those, INVALID IL   : {ran.Count(r => r.ExceptionKinds.Contains("System.InvalidProgramException")):N0}   <== the JIT refused the body outright");
         Console.WriteLine($"    sweep aborted early    : {ran.Count(r => r.AbortedAfter > 0):N0}   (the failure is in the method, not in the input)");
         Console.WriteLine($"  NON-DETERMINISTIC        : {ran.Count(r => r.NonDeterministic):N0}   <== not a function of its arguments, cannot be compared");
+        Console.WriteLine($"  instance (Tier 2)        : {ran.Count(r => r.IsInstance):N0}   (the receiver is generated, hashed, and read back after the call)");
+        Console.WriteLine($"    MUTATE their receiver  : {ran.Count(r => r.MutatesReceiver):N0}   <== they write through it, and that write is in the signature");
+        Console.WriteLine($"    no observable output   : {ran.Count(r => r.NoObservableOutput):N0}   (returned nothing, wrote nothing, threw nothing - excluded from --compare)");
         Console.WriteLine($"  CONSTANT OUTPUT          : {ran.Count(r => r.ConstantOutput):N0}   <== ran clean and ignored every argument: a body with its logic missing");
         Console.WriteLine($"  reads static fields      : {ran.Count(r => r.ReadsStatics):N0}   (comparable only if the game's cctor produced the same tables)");
         Console.WriteLine($"Total invocations          : {ran.Sum(r => r.AbortedAfter > 0 ? r.AbortedAfter : (long)(r.EdgeIterations + r.RandomIterations)) * 2:N0}   (two passes, for the determinism check)");
@@ -414,6 +438,47 @@ internal static class Program
     // The actual verification, once Phase 2 exists: two files, one signature per method key, and the only
     // thing that matters is whether the digests agree. Everything else in this program is machinery for
     // making this comparison possible.
+    // Phase 2 runs inside the game, where a parse bug costs a whole session: the player starts the game,
+    // waits out the sweep, and gets nothing. So the reader Phase 2 depends on is exercised here first,
+    // against a real Phase 1 file, on the desktop where a failure costs seconds.
+    private static int CheckPhase1(string path)
+    {
+        if (!File.Exists(path))
+        {
+            Console.Error.WriteLine($"no such file: {path}");
+            return 2;
+        }
+
+        var request = Phase1File.Read(File.ReadAllText(path));
+
+        Console.WriteLine($"plan     : seed {request.Plan.Seed}, {request.Plan.RandomIterations} random, {request.Plan.MaxEdgeIterations} edge cap");
+        Console.WriteLine($"keys     : {request.Keys.Count} comparable");
+
+        if (request.Keys.Count == 0)
+        {
+            Console.Error.WriteLine("no comparable keys - Phase 2 would have nothing to do");
+            return 1;
+        }
+
+        // A key that does not carry the whole identity would silently pair the wrong methods, which reads
+        // as a behavioural difference in the game rather than as a bug here.
+        var malformed = request.Keys.Where(k => !k.Contains("::") || !k.Contains("->")).Take(3).ToList();
+
+        if (malformed.Count > 0)
+        {
+            Console.Error.WriteLine("malformed keys: " + string.Join(", ", malformed));
+            return 1;
+        }
+
+        Console.WriteLine($"distinct : {request.Keys.Distinct(StringComparer.Ordinal).Count()}");
+        Console.WriteLine($"instance : {request.Keys.Count(k => k.Contains("(this:"))} carry a receiver");
+        Console.WriteLine("first three:");
+        foreach (var key in request.Keys.Take(3))
+            Console.WriteLine("  " + key);
+
+        return 0;
+    }
+
     private static int Compare(string leftPath, string rightPath)
     {
         var left = ReadSignatures(leftPath);
@@ -428,7 +493,9 @@ internal static class Program
 
             // A method that was not a function of its arguments on either side has nothing to compare:
             // reporting it as a mismatch would bury the real ones.
-            if (kv.Value.NonDeterministic || other.NonDeterministic || kv.Value.Aborted || other.Aborted || kv.Value.Signature == null || other.Signature == null)
+            if (kv.Value.NonDeterministic || other.NonDeterministic || kv.Value.Aborted || other.Aborted
+                || kv.Value.NoObservableOutput || other.NoObservableOutput
+                || kv.Value.Signature == null || other.Signature == null)
             {
                 skipped++;
                 continue;
@@ -471,6 +538,7 @@ internal static class Program
         public string Signature;
         public bool NonDeterministic;
         public bool Aborted;
+        public bool NoObservableOutput;
     }
 
     private static Dictionary<string, SignatureEntry> ReadSignatures(string path)
@@ -499,6 +567,11 @@ internal static class Program
                 // A truncated sweep covered a different number of inputs, so its digest is not the same
                 // experiment as a full one - comparing them would manufacture a mismatch.
                 Aborted = element.TryGetProperty("abortedAfter", out var a) && a.ValueKind == JsonValueKind.Number && a.GetInt32() > 0,
+
+                // A method that returned nothing, wrote nothing through its receiver and threw nothing
+                // has a digest over its INPUTS alone: it would agree with anything, so counting it as
+                // agreement would be counting the harness agreeing with itself.
+                NoObservableOutput = element.TryGetProperty("noObservableOutput", out var o) && o.ValueKind == JsonValueKind.True,
             };
         }
 

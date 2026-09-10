@@ -21,9 +21,13 @@ internal sealed class Candidate
     public string MethodName;
     public uint Token;
     public bool IsStatic;
-    public bool InvocableSignature;     // every parameter AND the return value is primitive-only, return is not void
+    public bool InvocableSignature;     // it can be CALLED: every input and the return value is primitive-only,
+                                        // and there is somewhere for an answer to go
     public bool BodySafe;               // own body passed every local check
     public bool ReadsStatics;
+    public bool ReadsStaticsTransitively;   // it, or something it calls, reads a static field
+    public string ReceiverTypeName;     // Tier 2: the struct an instance method is invoked on
+    public bool ReturnsVoid;
     public List<string> Callees = new();
     public string Reason = "";          // first check that said no, for the drop-reason table
 }
@@ -37,6 +41,11 @@ internal sealed class SelectionResult
     public long MethodsWithBody;
     public long DllsScanned;
     public long DllsUnreadable;
+
+    // Tier 2's other half, measured but not implemented: instance methods on CLASSES whose instance
+    // fields are all primitive-only and which have a parameterless constructor. Counting them is what
+    // says whether a heap receiver would be worth the risk it carries - see the note above Examine.
+    public long ClassReceiverCandidates;
 }
 
 // Finds the methods that can be fuzzed at all.
@@ -99,6 +108,7 @@ internal static class Selector
             // same type name can mean a different type one DLL over, and a shared cache would answer for
             // the wrong one.
             var safeTypes = new Dictionary<string, bool>(StringComparer.Ordinal);
+            var classReceivers = new Dictionary<string, bool>(StringComparer.Ordinal);
 
             foreach (var type in module.GetAllTypes())
             foreach (var method in type.Methods)
@@ -113,7 +123,7 @@ internal static class Selector
                 // name an assembly that is already in the context under a different identity. One method
                 // that cannot be analysed must not end a scan of a hundred and fifty DLLs.
                 Candidate candidate;
-                try { candidate = Examine(module, dll, assemblyName, type, method, body, safeTypes, allowStatics); }
+                try { candidate = Examine(module, dll, assemblyName, type, method, body, safeTypes, classReceivers, allowStatics, result); }
                 catch (Exception ex) { candidate = new Candidate { Key = assemblyName + "|analysis-error", TypeName = type.FullName, MethodName = method.Name?.Value ?? "", Reason = "analysis threw: " + ex.GetType().Name }; }
 
                 result.All.Add(candidate);
@@ -129,7 +139,9 @@ internal static class Selector
         var closed = Close(result.All.Where(c => c.BodySafe));
         var closedStaticOnly = Close(result.All.Where(c => c.BodySafe && c.IsStatic));
 
-        result.Selected = result.All.Where(c => c.IsStatic && c.InvocableSignature && closed.Contains(c.Key)).ToList();
+        PropagateStatics(result.All);
+
+        result.Selected = result.All.Where(c => c.InvocableSignature && closed.Contains(c.Key)).ToList();
         result.SelectedStaticOnly = result.All.Count(c => c.IsStatic && c.InvocableSignature && closedStaticOnly.Contains(c.Key));
 
         // Everything body-safe that still did not make it gets a reason too, so the drop table accounts
@@ -137,13 +149,48 @@ internal static class Selector
         var selected = new HashSet<Candidate>(result.Selected);
         foreach (var dropped in result.All.Where(c => c.BodySafe && !selected.Contains(c)))
         {
-            dropped.Reason = !dropped.IsStatic ? "instance method (callable only as a callee)"
-                : !dropped.InvocableSignature ? "static but returns void"
-                : "calls outside the whitelist";
+            dropped.Reason = !closed.Contains(dropped.Key) ? "calls outside the whitelist" : "static but returns void";
             result.DropReasons[dropped.Reason] = result.DropReasons.GetValueOrDefault(dropped.Reason) + 1;
         }
 
         return result;
+    }
+
+    // A static read taints the CALLERS too. Without this a method whose own body is clean but which calls
+    // FP.get_Value - and therefore depends on whatever the class constructor put in FPLut - is filed as
+    // pure, and Phase 2 would compare it as if the two hosts' tables did not also have to match. The flag
+    // exists to say which comparisons rest on a cctor, and one that stops at the first frame does not.
+    private static void PropagateStatics(List<Candidate> all)
+    {
+        var byKey = new Dictionary<string, Candidate>(StringComparer.Ordinal);
+        foreach (var candidate in all)
+        {
+            candidate.ReadsStaticsTransitively = candidate.ReadsStatics;
+
+            // Indexer, not Add: the analysis-error path files every failure in a module under one key.
+            byKey[candidate.Key] = candidate;
+        }
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var candidate in all)
+            {
+                if (candidate.ReadsStaticsTransitively)
+                    continue;
+
+                foreach (var callee in candidate.Callees)
+                {
+                    if (!byKey.TryGetValue(callee, out var target) || !target.ReadsStaticsTransitively)
+                        continue;
+
+                    candidate.ReadsStaticsTransitively = true;
+                    changed = true;
+                    break;
+                }
+            }
+        }
     }
 
     private static HashSet<string> Close(IEnumerable<Candidate> seed)
@@ -172,7 +219,7 @@ internal static class Selector
         return live;
     }
 
-    private static Candidate Examine(ModuleDefinition module, string dll, string assemblyName, TypeDefinition type, MethodDefinition method, CilMethodBody body, Dictionary<string, bool> safeTypes, bool allowStatics)
+    private static Candidate Examine(ModuleDefinition module, string dll, string assemblyName, TypeDefinition type, MethodDefinition method, CilMethodBody body, Dictionary<string, bool> safeTypes, Dictionary<string, bool> classReceivers, bool allowStatics, SelectionResult result)
     {
         // AsmResolver 6 resolves references through the context that read the module, so cross-assembly
         // callees come back as definitions from the sibling DLLs in the same directory.
@@ -206,20 +253,36 @@ internal static class Selector
             if (!IsSafeValue(parameterType, safeTypes, 0, context))
                 return Fail(candidate, "parameter is not primitive-only");
 
-        // An instance method still qualifies as a whitelist entry - its `this` is a managed pointer to a
-        // struct the harness owns, so it cannot reach further than a by-value copy would - but it is
-        // never invoked directly, so its return type only has to be safe, not useful.
-        if (!method.IsStatic && !IsSafeValue(type.ToTypeSignature(), safeTypes, 0, context))
-            return Fail(candidate, "instance method on a non-primitive-only type");
+        // Tier 2. The receiver of an instance method on a primitive-only struct is one more value the
+        // harness can generate from the same seed, so such a method is INVOKED rather than merely
+        // tolerated as a callee. Any other receiver - a class, or a struct that reaches a reference -
+        // would need a heap graph the Phase 2 host could not build identically, and stays out.
+        if (!method.IsStatic)
+        {
+            if (!IsSafeValue(type.ToTypeSignature(), safeTypes, 0, context))
+            {
+                if (EligibleClassReceiver(type, safeTypes, classReceivers, context))
+                    result.ClassReceiverCandidates++;
+
+                return Fail(candidate, type.IsValueType ? "instance method on a non-primitive-only struct" : "instance method on a class");
+            }
+
+            candidate.ReceiverTypeName = type.FullName;
+        }
 
         var returnType = signature.ReturnType;
         var returnsVoid = returnType.FullName == "System.Void";
+        candidate.ReturnsVoid = returnsVoid;
         if (!returnsVoid && !IsSafeValue(returnType, safeTypes, 0, context))
             return Fail(candidate, "return type is not primitive-only");
 
-        // A void static with primitive arguments has nowhere to put an answer, so a signature over it
-        // would be a hash of its inputs and nothing else - it would match no matter what the body does.
-        candidate.InvocableSignature = method.IsStatic && !returnsVoid;
+        // A void STATIC has nowhere to put an answer, so a signature over one would hash its inputs and
+        // nothing else and would agree between the two phases whatever the body did. A void INSTANCE
+        // method does have somewhere: its receiver, which the fuzzer reads back after the call - a
+        // Normalize() that returns nothing is all mutation. Whether it really writes there is a run-time
+        // measurement rather than something to guess at here, and MethodFuzzer flags the ones that never
+        // did as noObservableOutput so the comparison can drop them.
+        candidate.InvocableSignature = !method.IsStatic || !returnsVoid;
 
         foreach (var local in body.LocalVariables)
             if (local.VariableType is PointerTypeSignature or FunctionPointerTypeSignature)
@@ -344,6 +407,39 @@ internal static class Selector
         }
 
         cache[full] = true;
+        return true;
+    }
+
+    // Measurement only, deliberately not a selection path. Tier 2's other half would fuzz instance
+    // methods on CLASSES, and this counts the ones that would even be eligible: a parameterless
+    // constructor to allocate with, no base class to spread the fields over, and every instance field
+    // primitive-only. It stops there because a heap receiver is not the same problem as a struct one -
+    // it has to be built by RUNNING a recovered constructor, which is itself unverified code, and it
+    // gives the method an object identity that the two hosts have no way to agree on. Knowing the size
+    // of the prize is worth more than guessing at it.
+    private static bool EligibleClassReceiver(TypeDefinition type, Dictionary<string, bool> cache, Dictionary<string, bool> classReceivers, RuntimeContext context)
+    {
+        var full = type.FullName;
+        if (classReceivers.TryGetValue(full, out var known))
+            return known;
+
+        classReceivers[full] = false;
+        if (type.IsValueType || type.IsAbstract || type.IsInterface || type.GenericParameters.Count > 0 || type.BaseType?.FullName != "System.Object")
+            return false;
+
+        var allocatable = false;
+        foreach (var constructor in type.Methods)
+            if (constructor.IsConstructor && !constructor.IsStatic && constructor.Signature?.ParameterTypes.Count == 0)
+                allocatable = true;
+
+        if (!allocatable)
+            return false;
+
+        foreach (var field in type.Fields)
+            if (!field.IsStatic && !IsSafeValue(field.Signature?.FieldType, cache, 0, context))
+                return false;
+
+        classReceivers[full] = true;
         return true;
     }
 

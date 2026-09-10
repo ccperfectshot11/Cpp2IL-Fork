@@ -22,6 +22,12 @@ public sealed class SignatureHash : IDisposable
     public const byte TagInputs = 0x10;
     public const byte TagOutput = 0x11;
 
+    // Tier 2. The receiver of an instance method is an input on the way in and an output on the way out,
+    // because a struct method can write through it - so it is absorbed twice, under two tags, and a
+    // mutation shows up in the digest as a difference between them.
+    public const byte TagReceiver = 0x12;
+    public const byte TagReceiverAfter = 0x13;
+
     private readonly IncrementalHash _hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
     private readonly byte[] _scratch = new byte[8];
 
