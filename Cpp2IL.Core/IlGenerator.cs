@@ -311,6 +311,10 @@ public static class IlGenerator
         // per local and changes nothing about behaviour.
         // Off by default because it costs two instructions per local, about 22% more output, which buys
         // nothing for a run meant to be read rather than recompiled.
+        // Held rather than emitted, because in a constructor these cannot go first - see the call to
+        // EmitLocalInitialisation once the body exists.
+        var localInitialisation = new List<CilInstruction>();
+
         if (InitialiseLocals)
         {
             foreach (var ilLocal in body.LocalVariables)
@@ -322,8 +326,8 @@ public static class IlGenerator
                 if (ilLocal.VariableType is ByReferenceTypeSignature)
                     continue;
 
-                body.Instructions.Add(CilOpCodes.Ldloca, ilLocal);
-                body.Instructions.Add(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef());
+                localInitialisation.Add(new CilInstruction(CilOpCodes.Ldloca, ilLocal));
+                localInitialisation.Add(new CilInstruction(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef()));
             }
         }
 
@@ -424,6 +428,8 @@ public static class IlGenerator
             branchInstruction.Operand = new CilInstructionLabel(target);
         }
 
+        EmitLocalInitialisation(body, localInitialisation);
+
         // Add analysis warnings
         var instructions = body.Instructions;
         foreach (var warning in context.AnalysisWarnings)
@@ -433,6 +439,30 @@ public static class IlGenerator
         }
 
         Analysis.DumpDiag.MaybeDump(context, definition);
+    }
+
+    // Explicit zeroing of every local, inserted only once the body exists so it can go in the right place.
+    // Everywhere but a constructor that place is the start; in a constructor the base call has to stay
+    // first. The decompiler recognises `: base(...)` by the constructor call being the opening instruction,
+    // and with anything ahead of it the chain is not recognised and is written as `base._ctor();` - not
+    // callable C#, and 503 occurrences of it in the output.
+    private static void EmitLocalInitialisation(CilMethodBody body, List<CilInstruction> initialisation)
+    {
+        if (initialisation.Count == 0)
+            return;
+
+        var at = 0;
+
+        if (body.Owner.IsConstructor)
+            for (var i = 0; i < body.Instructions.Count; i++)
+                if (body.Instructions[i].OpCode == CilOpCodes.Call
+                    && body.Instructions[i].Operand is IMethodDescriptor { Name.Value: ".ctor" })
+                {
+                    at = i + 1;
+                    break;
+                }
+
+        body.Instructions.InsertRange(at, initialisation);
     }
 
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
