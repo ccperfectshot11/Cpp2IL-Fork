@@ -3,3 +3,15 @@ obj/
 *.user
 cpp2il_out/
 bodyscan-runs/*.log
+
+# Measurement artefacts. Every run of Cpp2IL, CompileCheck, VerifyCheck or ilverify drops one of these,
+# and there are dozens per session; the numbers that matter live in commit messages and in the tools.
+out_*/
+src_*/
+md_*.log
+cc2_*.txt
+td_*.log
+*.partial
+*.skip
+*.inflight
+scratchpad-saved/
