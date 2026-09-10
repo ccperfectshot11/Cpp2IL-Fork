@@ -131,7 +131,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("-- why the rest were dropped (first failing check) --");
         foreach (var kv in selection.DropReasons.OrderByDescending(k => k.Value).Take(15))
-            Console.WriteLine($"  {kv.Key,-42} {kv.Value,10:N0}");
+            Console.WriteLine($"  {kv.Key,-46} {kv.Value,10:N0}");
 
         Console.WriteLine();
         Console.WriteLine("-- selected methods by declaring type (top 25) --");

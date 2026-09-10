@@ -490,6 +490,10 @@ public static class IlGenerator
 
         EmitLocalInitialisation(body, localInitialisation);
 
+        // Body-wide rather than per instruction, because the box and the unbox that have to agree about an
+        // untyped local are emitted at unrelated sites and neither can see the other.
+        Analysis.StackCoercion.AgreeWithBox(body);
+
         // The method header declares how deep the evaluation stack goes, and the runtime rejects the whole
         // body when the declared depth is too small - "Stack overflow at offset 0", before a single
         // instruction runs. It is why every recovered method that takes an argument is refused by the JIT
@@ -887,10 +891,14 @@ public static class IlGenerator
     {
         try
         {
-            // Told to throw, not to guess. Passing false makes it return a depth computed from a stack it
-            // already knows does not balance, which is exactly the too-small number the runtime rejects -
-            // and silently, so the fallback below never got a chance to run.
-            body.MaxStack = body.ComputeMaxStack(true);
+            // Two separate reasons the old call was wrong, and the parameterless overload fixes both.
+            // It recalculates offsets first: left stale, the walk follows branches to an address where the
+            // target no longer sits, measures a path the body does not have, and can come back short -
+            // everything inserted after emission, StackCoercion included, moves every offset behind it.
+            // And it throws on an unbalanced stack instead of returning a depth computed from a stack it
+            // already knows does not close, which is the too-small number the runtime rejects, returned
+            // silently, so the fallback below never got a chance to run.
+            body.MaxStack = body.ComputeMaxStack();
         }
         catch (Exception)
         {
@@ -1391,6 +1399,12 @@ public static class IlGenerator
                 instructions.Add(CilOpCodes.Call, writeLine);
                 break;
         }
+
+        // Everything above emits the load one site asks for and the store another asks for, with no notion
+        // of what is on the stack in between, so the two regularly disagree about type. This is where the
+        // pair is reconciled, on the group that was just emitted rather than on the body: that group starts
+        // and ends with an empty stack by construction, which is what makes the walk exact.
+        Analysis.StackCoercion.Reconcile(body, startIndex);
 
         return instructions.ToList().GetRange(startIndex, instructions.Count - startIndex); // Return added IL
     }
