@@ -912,6 +912,33 @@ public static class IlGenerator
 
         return fieldName.Substring(1, fieldName.Length - suffix.Length - 1);
     }
+
+    // typeof(T) -> typeof(T).TypeHandle.Value, turning a System.Type on the stack into the IntPtr the
+    // destination wants. Value is an instance property on a struct, so the handle has to be in a local
+    // first to have an address to call it on; one such local is created per method and reused.
+    private static void EmitTypeHandleValue(MethodDefinition method, CilInstructionCollection instructions, IResolutionScope corLibScope)
+    {
+        var handleType = corLibScope.CreateTypeReference("System", "RuntimeTypeHandle");
+        var handleSignature = handleType.ToTypeSignature(true);
+
+        instructions.Add(CilOpCodes.Callvirt, corLibScope
+            .CreateTypeReference("System", "Type")
+            .CreateMemberReference("get_TypeHandle", MethodSignature.CreateInstance(handleSignature)));
+
+        var handleLocal = method.CilMethodBody!.LocalVariables
+            .FirstOrDefault(l => l.VariableType is TypeDefOrRefSignature { FullName: "System.RuntimeTypeHandle" });
+
+        if (handleLocal == null)
+        {
+            handleLocal = new CilLocalVariable(handleSignature);
+            method.CilMethodBody.LocalVariables.Add(handleLocal);
+        }
+
+        instructions.Add(CilOpCodes.Stloc, handleLocal);
+        instructions.Add(CilOpCodes.Ldloca, handleLocal);
+        instructions.Add(CilOpCodes.Call, handleType.CreateMemberReference("get_Value",
+            MethodSignature.CreateInstance(method.DeclaringModule!.CorLibTypeFactory.IntPtr)));
+    }
     private static int ConstructorReceiverIndex(Instruction constructorCall) => constructorCall.OpCode == OpCode.CallVoid ? 1 : 2;
 
     // `: base(...)` and `: this(...)` are the only constructor calls that genuinely are calls on an object
@@ -1130,6 +1157,19 @@ public static class IlGenerator
 
                 instructions.Add(CilOpCodes.Ldtoken, type.ToTypeSignature().ToTypeDefOrRef());
                 instructions.Add(CilOpCodes.Call, typeFromHandle);
+
+                // What il2cpp actually loads here is an Il2CppClass*, and where the destination holds one the
+                // code goes on to use it as a pointer. A System.Type stored into an IntPtr is the top
+                // compile error in the output (1,530 methods, CS0029), and the nearest thing C# can say is
+                // the type handle's Value - also a pointer identifying the type, and a real expression
+                // rather than a diagnostic.
+                //
+                // The destination is usually typed RuntimeClassTypeAnalysisContext rather than
+                // System.IntPtr: that synthetic type IS the class pointer, and it is only lowered to IntPtr
+                // when the local signature is written. Checking for System.IntPtr alone matched nothing.
+                if (expectedType is RuntimeClassTypeAnalysisContext || expectedType?.FullName == "System.IntPtr")
+                    EmitTypeHandleValue(method, instructions, corLibScope);
+
                 break;
             default:
                 instructions.Add(CilOpCodes.Ldstr, Diagnostic("Unknown operand: " + operand));
