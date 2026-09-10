@@ -89,9 +89,21 @@ public class X86InstructionSet : Cpp2IlInstructionSet
         var body = X86Utils.Iterate(context);
 
         // Splitting a 128-bit move into its four lanes only pays for itself where something actually
-        // permutes lanes. Everywhere else an xmm register is read back exactly as it was written, so the
-        // split buys nothing and turns each unresolvable 16-byte copy into four unresolvable 4-byte ones.
-        var permutesLanes = XmmLanes && body.Any(i => i.Mnemonic is Mnemonic.Shufps or Mnemonic.Unpcklps);
+        // touches a single lane. Everywhere else an xmm register is read back exactly as it was written, so
+        // the split buys nothing and turns each unresolvable 16-byte copy into four unresolvable 4-byte
+        // ones.
+        //
+        // A permutation is one way to touch one lane; a register-to-register `movss` is the other, and it
+        // is the one `EditorRectUtils::SetX` uses - load all four floats of the Rect, replace lane 0 with
+        // the argument, store all four back. Modelled without lanes, that `movss` overwrites the whole
+        // register, so the load of the parameter becomes dead and is deleted: the method came out returning
+        // a zeroed Rect with one field set, ignoring the Rect it was given. Verified wrong against the real
+        // game - it is one of the 324 methods whose behaviour differs.
+        //
+        // Only the register-to-register form counts. `movss xmm, [mem]` zeroes the lanes above it, exactly
+        // as the ISA says, so it defines the whole register and nothing is lost by modelling it that way.
+        var permutesLanes = XmmLanes && body.Any(i => i.Mnemonic is Mnemonic.Shufps or Mnemonic.Unpcklps
+            || (i.Mnemonic is Mnemonic.Movss or Mnemonic.Movsd && i.Op0Kind == OpKind.Register && i.Op1Kind == OpKind.Register));
 
         foreach (var instruction in body)
             ConvertInstructionStatement(instruction, instructions, addresses, context, permutesLanes);
