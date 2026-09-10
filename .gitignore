@@ -17,6 +17,8 @@ td_*.log
 scratchpad-saved/
 compilecheck_*.txt
 bodyscan_*.txt
+differing-methods.txt
+!differing-methods.txt
 *_run.log
 fielddiag*.log
 markerdiag.log
