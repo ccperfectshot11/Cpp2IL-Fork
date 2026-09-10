@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using AsmResolver.DotNet;
@@ -45,8 +45,9 @@ public static class StackCoercion
     private static readonly bool UntypedArithmetic = Environment.GetEnvironmentVariable("CPP2IL_OBJ_ARITH") != "0";
 
     // Reads a union struct through whichever member is the register at the width the opcode wants. Shares its
-    // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=0 disables both).
-    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
+    // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=1 enables both; off by
+    // default while the field read can land on an unassigned local - see IlGenerator).
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
 
     // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
     // body that keeps finding work is looping over something unexpected rather than converging.

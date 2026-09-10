@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -54,9 +54,14 @@ public static class IlGenerator
     private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
 
     // The same repair one step out, for a struct that holds its whole value in several overlapping fields
-    // rather than in one. On by default (CPP2IL_UNION_STRUCTS=0 disables); StackCoercion reads the same
+    // rather than in one. OFF by default (CPP2IL_UNION_STRUCTS=1 enables); StackCoercion reads the same
     // switch for its half. See UnionValueField.
-    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
+    //
+    // Measured at -50 STRICT: the ldfld it appends lands on a local nothing ever stores to, so the
+    // decompiled C# reads entityRef.Index out of an unassigned variable - a CS0165 family of 167 methods
+    // and 321 errors that does not exist without it. The 12 or so CS0019/CS0029 sites it does repair are
+    // real; the read needs a definite assignment before this can go back on.
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
 
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
