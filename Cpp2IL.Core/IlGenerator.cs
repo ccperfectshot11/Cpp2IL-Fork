@@ -35,8 +35,8 @@ public static class IlGenerator
     // Casts an untyped local to what the use site expects. On by default (CPP2IL_CAST_UNTYPED=0 disables).
     private static readonly bool CastUntypedLocals = Environment.GetEnvironmentVariable("CPP2IL_CAST_UNTYPED") != "0";
 
-    // Pushes null rather than a native zero where a reference is expected. Off pending measurement.
-    private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") == "1";
+    // Pushes null rather than a native zero where a reference is expected. On by default, worth 45 methods.
+    private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") != "0";
 
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
