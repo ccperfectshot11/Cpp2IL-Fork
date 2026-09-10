@@ -15,3 +15,14 @@ td_*.log
 *.skip
 *.inflight
 scratchpad-saved/
+compilecheck_*.txt
+bodyscan_*.txt
+*_run.log
+fielddiag*.log
+markerdiag.log
+a4.log
+td.log
+baseline_064.json
+bodyscan-runs/marker_methods.json
+rc_*.log
+vc*.log
