@@ -10,8 +10,8 @@ digest - a *signature*. Two hosts that produce the same signature for a method a
 bit for bit.
 
 * **Phase 1** (implemented here) computes signatures from a Cpp2IL `--output-to` directory.
-* **Phase 2** (specified below, not implemented) computes the same signatures from the **real native
-  methods inside the running game**, via MelonLoader + Il2CppInterop.
+* **Phase 2** (`Cpp2IL.VerifyMod`) computes the same signatures from the **real native methods inside
+  the running game**, via MelonLoader + Il2CppInterop.
 
 `--compare` of the two files is the actual verification. A Phase 1 signature on its own only proves a
 method is a function of its arguments; it is the comparison that says whether it is the *right*
@@ -115,8 +115,25 @@ run its polynomial instead of its overflow guard.
 
 ## Phase 2: the same signature from the running game
 
-Phase 2 is a MelonLoader mod for Stumble Guys 0.64 that produces a file in the identical format with
-`"phase": "2-native"`. It needs exactly this:
+`Cpp2IL.VerifyMod` is that mod. Build it, drop `Cpp2IL.VerifyMod.dll` and `Cpp2IL.VerifyCore.dll` into
+the game's `Mods` folder alongside a Phase 1 file renamed `verifycheck-phase1.json`, and start the game.
+It runs at `OnInitializeMelon`, before any scene exists - every selected method is pure by construction,
+so none of them needs one - and writes `verifycheck-phase2.json` next to itself.
+
+```
+dotnet build Cpp2IL.VerifyMod -c Release -p:GameDir=<game>
+Cpp2IL.VerifyCheck <dllDir> --out phase1.json
+copy phase1.json <game>\Modserifycheck-phase1.json
+<start the game, wait for the log line, quit>
+Cpp2IL.VerifyCheck --compare phase1.json <game>\Modserifycheck-phase2.json
+```
+
+It resolves a key by indexing every method in the game's own Il2CppInterop assemblies under the same
+`MethodKeys.For`, rather than resolving keys one at a time - a key names a type by its normalised name
+and there is no reverse lookup from that back to a `Type`. Its own assemblies are excluded from that
+index, or it would find the recovered methods sitting next to it and compare them against themselves.
+
+The design below is what it implements, and what a port to another game would need:
 
 1. **Reference `Cpp2IL.VerifyCore`** (it multi-targets `netstandard2.0` for this reason and has no
    package references, so it drops into a Mods folder as one file). Do **not** re-implement input

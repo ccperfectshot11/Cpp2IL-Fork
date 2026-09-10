@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A MelonLoader mod, so it targets what MelonLoader's net6 runtime loads, not what the rest of the
+       solution builds for. It ships as two files into the game's Mods folder: this and VerifyCore. -->
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Cpp2IL.VerifyMod</AssemblyName>
+    <RootNamespace>Cpp2IL.VerifyMod</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+
+    <!-- Override with -p:GameDir=... for a different install. -->
+    <GameDir Condition="'$(GameDir)' == ''">C:\Users\Helper\Desktop\StumblePeak</GameDir>
+    <MelonDir>$(GameDir)\MelonLoader</MelonDir>
+    <Net6>$(MelonDir)\net6</Net6>
+    <Il2Cpp>$(MelonDir)\Il2CppAssemblies</Il2Cpp>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cpp2IL.VerifyCore\Cpp2IL.VerifyCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="MelonLoader"><HintPath>$(Net6)\MelonLoader.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(Net6)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Common"><HintPath>$(Net6)\Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(Il2Cpp)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>
