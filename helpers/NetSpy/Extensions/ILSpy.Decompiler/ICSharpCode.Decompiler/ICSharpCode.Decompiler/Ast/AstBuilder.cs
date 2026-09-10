@@ -203,10 +203,108 @@ namespace ICSharpCode.Decompiler.Ast {
 		// constructor stands in for the hidden one, all are nested public, and no escaped name collides with a
 		// sibling nested type or with a member of the parent.
 		//
-		// State machines (<X>d__N) are deliberately left hidden: they implement IEnumerator/IAsyncStateMachine and
-		// take a state argument in their constructor, so declaring them with hidden members would trade CS0426 for
-		// CS0535 and CS1729 instead.
+		// State machines (<X>d__N) cannot be declared this way - they implement IEnumerator/IAsyncStateMachine, so
+		// declaring them with hidden members trades CS0426 for CS0535. They get abstract member stubs instead, see
+		// StateMachineStubs below.
 		static readonly bool ClosureDeclarations = Environment.GetEnvironmentVariable("CPP2IL_CLOSURE_DECL") != "0";
+
+		// Cpp2IL: the same hole as ClosureDeclarations above, one level worse. An iterator's state machine
+		// (<X>d__N) is hidden because YieldReturnDecompiler is expected to fold it back into the yield-return
+		// method it came from; that fold starts by matching the `newobj <X>d__N::.ctor(int)` in the parent, and
+		// over both Assembly-CSharp DLLs the recovered bodies contain exactly zero of them - il2cpp's object_new
+		// plus ctor pair comes back as a plain null. The 424 parent methods that touch a state machine reach it
+		// only through 1,115 stfld and 435 initobj, so the fold cannot fire on a single one of them, and MoveNext
+		// is nowhere near the pattern either (goto IL_xxxx, unrecovered-instruction markers). The type is
+		// therefore hidden while `<X>d__N loc = null; loc.__4__this = this; return loc;` is still printed:
+		// CS0426, 427 methods, 335 of them with no other complaint.
+		//
+		// Declaring it the way closures are declared - type visible, members hidden - does not work here, because
+		// a state machine implements IEnumerator/IEnumerator<T>/IDisposable: hidden members mean CS0535, which is
+		// a class-level error, so the whole file including the parent's own methods goes structurally broken.
+		// Measured: STRICT 11,363 -> 10,019. Dropping the interface list instead makes `return loc;` a CS0029 and
+		// costs 191. Declaring the members for real satisfies the interfaces but puts their 1,414 declarations in
+		// the recompile denominator (16,677 -> 18,091), the same inflation that made renaming the closure types
+		// harmful, and most of those declarations are trivia (an empty Dispose, a Reset that throws, two Current
+		// getters) that would compile for free and flatter the percentage.
+		//
+		// So the members are emitted as abstract declarations: they satisfy the interfaces, they carry no body,
+		// and a body is exactly what the denominator counts - CompileCheck measures method declarations that have
+		// one. Nothing recovered is added to either side of the ratio, and nothing recovered is lost: the fields
+		// stay, and they are what the parent actually writes to (__1__state and __4__this on nearly every use,
+		// plus the captured parameters - delay, url, sceneName ...). `abstract` contradicts the `sealed` in the
+		// metadata, but no use site can tell: with zero newobj recovered there is nothing left constructing one.
+		//
+		// Only the canonical iterator shape is stubbed. IEnumerator<object> collapses onto IEnumerator's own
+		// Current, so one `object Current` implements both; an IEnumerator<T> with a real T, or an IEnumerable<T>
+		// pair of GetEnumerator overloads, would need two members differing only in return type, which C# cannot
+		// express implicitly - those stay hidden. Async state machines stay hidden too: they are structs, so they
+		// cannot be abstract, and declaring them drags in dnlib's synthesized [StructLayout], whose attribute type
+		// this stripped reference set does not have - 42 class-level CS0234 that block 407 methods on their own.
+		// Measured: STRICT 11,363 (68,1%) -> 11,671 (70,0%), denominator 16,677 unchanged, class-level errors 143
+		// unchanged, methods in structurally-broken types 447 unchanged. CS0426 drops from 427 methods to 21, the
+		// remainder being the async and generic-argument shapes left hidden on purpose.
+		static readonly bool StateMachineStubs = Environment.GetEnvironmentVariable("CPP2IL_SM_DECL") != "0";
+
+		static bool IsStubbableIterator(TypeDef type)
+		{
+			if (!StateMachineStubs || type.DeclaringType == null || DnlibExtensions.IsValueType(type) || !type.IsCompilerGenerated())
+				return false;
+			bool hasEnumerator = false;
+			for (int i = 0; i < type.Interfaces.Count; i++) {
+				var iface = type.Interfaces[i].Interface;
+				if (iface == null)
+					return false;
+				switch (iface.FullName) {
+				case "System.Collections.IEnumerator":
+					hasEnumerator = true;
+					break;
+				case "System.Collections.Generic.IEnumerator`1<System.Object>":
+				case "System.IDisposable":
+					break;
+				default:
+					return false;
+				}
+			}
+			return hasEnumerator;
+		}
+
+		static void AddIteratorStubs(TypeDeclaration astType)
+		{
+			var current = new PropertyDeclaration();
+			current.Modifiers = Modifiers.Public | Modifiers.Abstract;
+			current.ReturnType = new PrimitiveType("object");
+			current.NameToken = Identifier.Create("Current");
+			current.Getter = new Accessor();
+			astType.Members.Add(current);
+			astType.Members.Add(StubMethod("MoveNext", new PrimitiveType("bool")));
+			astType.Members.Add(StubMethod("Reset", new PrimitiveType("void")));
+			astType.Members.Add(StubMethod("Dispose", new PrimitiveType("void")));
+		}
+
+		static MethodDeclaration StubMethod(string name, AstType returnType)
+		{
+			var astMethod = new MethodDeclaration();
+			astMethod.Modifiers = Modifiers.Public | Modifiers.Abstract;
+			astMethod.ReturnType = returnType;
+			astMethod.NameToken = Identifier.Create(name);
+			return astMethod;
+		}
+
+		// [TupleElementNames] has no C# syntax at all - writing it is CS8138 - so the three state machine fields
+		// that carry one would each turn their whole file structurally broken the moment the type is declared.
+		// Dropping it loses the element names only; the field keeps the ValueTuple type it is actually used as.
+		static void RemoveUnwritableAttributes(EntityDeclaration decl)
+		{
+			foreach (var section in decl.Attributes.ToArray()) {
+				foreach (var attr in section.Attributes.ToArray()) {
+					var attrType = attr.Type.Annotation<ITypeDefOrRef>();
+					if (attrType != null && attrType.FullName == "System.Runtime.CompilerServices.TupleElementNamesAttribute")
+						attr.Remove();
+				}
+				if (section.Attributes.Count == 0)
+					section.Remove();
+			}
+		}
 
 		public static bool MemberIsHidden(IMemberRef member, DecompilerSettings settings)
 		{
@@ -222,6 +320,11 @@ namespace ICSharpCode.Decompiler.Ast {
 				// print a method group reference to it, so hiding it too would only trade CS0426 for CS1061.
 				if (ClosureDeclarations && settings.AnonymousMethods && method.DeclaringType != null &&
 					IsClosureType(method.DeclaringType) && (method.IsConstructor || method.HasGeneratedName()))
+					return true;
+				// Cpp2IL: a stubbed iterator keeps its fields and its four abstract members (see StateMachineStubs);
+				// its real methods - MoveNext, the explicit Dispose/Reset/Current, the ctor - stay out of the output
+				// so that no body of theirs ever lands in the recompile denominator.
+				if (method.DeclaringType != null && IsStubbableIterator(method.DeclaringType))
 					return true;
 				if (settings.AnonymousMethods) {
 					if (method.Name.StartsWith("_Lambda$__") && method.IsCompilerGenerated())
@@ -239,7 +342,7 @@ namespace ICSharpCode.Decompiler.Ast {
 				if (type.DeclaringType != null) {
 					if (settings.AnonymousMethods && IsClosureType(type) && !ClosureDeclarations)
 						return true;
-					if (settings.YieldReturn && YieldReturnDecompiler.IsCompilerGeneratorEnumerator(type))
+					if (settings.YieldReturn && YieldReturnDecompiler.IsCompilerGeneratorEnumerator(type) && !IsStubbableIterator(type))
 						return true;
 					if (settings.AsyncAwait && AsyncDecompiler.IsCompilerGeneratedStateMachine(type))
 						return true;
@@ -252,6 +355,15 @@ namespace ICSharpCode.Decompiler.Ast {
 						return true;
 				}
 				return false;
+			}
+
+			PropertyDef prop = member as PropertyDef;
+			if (prop != null) {
+				if (settings.ForceShowAllMembers)
+					return false;
+				// Cpp2IL: Current is replaced by the abstract stub, so the real one has to go. A state machine has no
+				// other property, and nothing else reaches this branch, so no other type changes shape because of it.
+				return prop.DeclaringType != null && IsStubbableIterator(prop.DeclaringType);
 			}
 
 			FieldDef field = member as FieldDef;
@@ -604,6 +716,11 @@ namespace ICSharpCode.Decompiler.Ast {
 				var interfaceImpls = GetInterfaceImpls(typeDef);
 				for (int i = 0; i < interfaceImpls.Count; i++)
 					astType.AddChild(ConvertType(interfaceImpls[i].Interface, stringBuilder), Roles.BaseType);
+
+				if (IsStubbableIterator(typeDef)) {
+					astType.Modifiers = (astType.Modifiers & ~Modifiers.Sealed) | Modifiers.Abstract;
+					AddIteratorStubs(astType);
+				}
 
 				AddTypeMembers(astType, typeDef);
 
@@ -1237,6 +1354,7 @@ namespace ICSharpCode.Decompiler.Ast {
 						var propDef = propertyDefs[i];
 						if (propDef.GetMethod == null && propDef.SetMethod == null)
 							continue;
+						if (MemberIsHidden(propDef, context.Settings)) continue;
 						astType.Members.Add(CreateProperty(propDef));
 					}
 					break;
@@ -1282,6 +1400,8 @@ namespace ICSharpCode.Decompiler.Ast {
 
 				var pd = def as PropertyDef;
 				if (pd != null) {
+					if (MemberIsHidden(pd, context.Settings))
+						continue;
 					if (pd.GetMethod is not null || pd.SetMethod is not null)
 						astType.Members.Add(CreateProperty(pd));
 
@@ -1993,6 +2113,8 @@ namespace ICSharpCode.Decompiler.Ast {
 				initializer.Initializer = CreateExpressionForConstant(constant, fieldDef.FieldType, stringBuilder, fieldDef.DeclaringType.IsEnum);
 			}
 			ConvertAttributes(Context.MetadataTextColorProvider, astField, fieldDef, context.Settings, stringBuilder);
+			if (fieldDef.DeclaringType != null && IsStubbableIterator(fieldDef.DeclaringType))
+				RemoveUnwritableAttributes(astField);
 			SetNewModifier(astField);
 
 			if (fieldDef.HasFieldRVA) {
