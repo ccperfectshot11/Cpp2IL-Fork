@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Multi-targeted on purpose. Phase 1 runs on net10 next to the other check tools; Phase 2 runs
+         inside the game as a MelonLoader mod, on the runtime Unity shipped. netstandard2.0 is the only
+         thing both can reference, and the whole point of this library is that ONE implementation of
+         input generation and signature hashing feeds both - two copies would drift and every diff
+         would then be a diff in the harness rather than in the recovered code. -->
+    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Cpp2IL.VerifyCore</AssemblyName>
+    <RootNamespace>Cpp2IL.VerifyCore</RootNamespace>
+    <!-- No package references, deliberately: a MelonLoader mod that has to drag NuGet dependencies into
+         the game's Mods folder is a mod that will not be built. -->
+  </PropertyGroup>
+
+</Project>

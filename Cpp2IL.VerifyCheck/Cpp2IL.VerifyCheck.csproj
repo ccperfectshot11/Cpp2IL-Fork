@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Cpp2IL.VerifyCheck</AssemblyName>
+    <RootNamespace>Cpp2IL.VerifyCheck</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Metadata only. Selection reads CIL, so there is no reason to pull in the decompiler the other
+         check tools need - and a fuzzer that takes ten minutes to start is a fuzzer nobody runs. -->
+    <PackageReference Include="AsmResolver.DotNet" Version="6.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cpp2IL.VerifyCore\Cpp2IL.VerifyCore.csproj" />
+  </ItemGroup>
+
+</Project>
