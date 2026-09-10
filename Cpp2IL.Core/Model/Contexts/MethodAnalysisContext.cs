@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -439,6 +439,12 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, 
         // Folding a constant exposes more to propagate
         for (var i = 0; i < 8 && ConstantFolder.Run(this); i++)
             SsaSimplifier.Run(this);
+
+        // Drop the inlined castclass checks. Runs here, at the end of the SSA phase, for two reasons:
+        // copy propagation has already collapsed the class-pointer reads into the direct
+        // [klass + offset] operands the match is written against, and single assignment means the walk
+        // back from each comparison to those reads has exactly one definition to follow at every step.
+        CastRecovery.Run(this);
 
         InternalCallGuardRemover.Run(this);
         KeyFunctionRecovery.Run(this);
