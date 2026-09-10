@@ -93,6 +93,15 @@ public static class SignatureJson
             result.AbortedAfter.ToString(CultureInfo.InvariantCulture),
             result.ElapsedMs.ToString(CultureInfo.InvariantCulture),
             string.Join("|", result.ExceptionKinds ?? new List<string>()),
+
+            // Tier 2. Left out of the first version of this format, which meant a resumed run reported
+            // every instance method as a static one - 658 of them present in the file and zero in the
+            // summary. Anything a result carries has to be here, or resuming quietly changes the answer.
+            result.ReceiverType,
+            result.IsInstance ? "1" : "0",
+            result.MutatesReceiver ? "1" : "0",
+            result.NoObservableOutput ? "1" : "0",
+            result.MutatedCount.ToString(CultureInfo.InvariantCulture),
         };
 
         var line = new StringBuilder();
@@ -114,6 +123,8 @@ public static class SignatureJson
     {
         var fields = line.Split('\u001f');
 
+        // An older partial file has fewer columns; the Tier 2 ones below are read only when present, so a
+        // half-finished run from a previous build resumes rather than being thrown away.
         if (fields.Length < 19)
             return null;
 
@@ -134,6 +145,11 @@ public static class SignatureJson
             ExceptionKinds = fields[18].Length == 0
                 ? new List<string>()
                 : new List<string>(fields[18].Split('|')),
+            ReceiverType = fields.Length > 19 ? Blank(fields[19]) : null,
+            IsInstance = fields.Length > 20 && fields[20] == "1",
+            MutatesReceiver = fields.Length > 21 && fields[21] == "1",
+            NoObservableOutput = fields.Length > 22 && fields[22] == "1",
+            MutatedCount = fields.Length > 23 ? int.Parse(fields[23], CultureInfo.InvariantCulture) : 0,
         };
     }
 
