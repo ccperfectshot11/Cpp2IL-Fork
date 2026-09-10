@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.Graphs;
@@ -9,9 +10,26 @@ namespace Cpp2IL.Core.Analysis;
 // Merge the copies left behind by SSA destruction.
 public static class CopyCoalescer
 {
-    public static void Run(MethodAnalysisContext method) => Run(method.ControlFlowGraph!);
+    // An argument's entry local may not be merged into the group a later write to the same register
+    // created. The merge keeps one of the two locals and rewrites every use to it, and whichever way
+    // that falls the argument is gone: keep the written local and every read of the argument becomes a
+    // local nothing assigns (ldloc of an uninitialised slot), keep the argument local and the writes
+    // become stloc into a slot the reads never look at, because the generator loads an argument with
+    // ldarg. Either way the method quietly ignores one of its arguments.
+    //
+    // It takes a conditional write to an argument register to get here - a cmov, or a branch over a mov
+    // - because only a join produces the phi whose destruction leaves the copy. That is exactly how
+    // Clamp, Min and Max compile: `cmovge edx, ecx` over the argument in edx, or `movaps xmm0, xmm1`
+    // under a jump. Of the 206 static methods measured to behave differently from the running game, 68
+    // never load one of their arguments, and 59 of those read a local nothing ever writes in its place.
+    //
+    // Not coalescing costs one local and one move on those merges. CPP2IL_KEEP_ARGS=0 restores the old
+    // behaviour.
+    private static readonly bool KeepArguments = Environment.GetEnvironmentVariable("CPP2IL_KEEP_ARGS") != "0";
 
-    public static void Run(ISILControlFlowGraph cfg)
+    public static void Run(MethodAnalysisContext method) => Run(method.ControlFlowGraph!, method.ParameterLocals);
+
+    public static void Run(ISILControlFlowGraph cfg, List<LocalVariable> parameterLocals)
     {
         var copies = FindSameSlotCopies(cfg);
         var escapedSlots = FindEscapedSlotGroups(cfg);
@@ -31,12 +49,29 @@ public static class CopyCoalescer
         var interference = BuildInterference(cfg, candidates);
         var groups = new DisjointSet(candidates);
 
+        // Never a union end, so an argument local is always its own group and Find returns it unchanged.
+        var pinned = new HashSet<LocalVariable>();
+        if (KeepArguments)
+            pinned.UnionWith(parameterLocals);
+
         foreach (var group in escapedSlots)
         {
-            for (var i = 1; i < group.Count; i++)
+            // The anchor is the first member that may be merged; a pinned one would block the whole group.
+            LocalVariable? anchor = null;
+
+            foreach (var member in group)
             {
-                var a = groups.Find(group[0]);
-                var b = groups.Find(group[i]);
+                if (pinned.Contains(member))
+                    continue;
+
+                if (anchor == null)
+                {
+                    anchor = member;
+                    continue;
+                }
+
+                var a = groups.Find(anchor);
+                var b = groups.Find(member);
 
                 if (a == b || (a.Type != null && b.Type != null && !ReferenceEquals(a.Type, b.Type)))
                     continue;
@@ -49,6 +84,16 @@ public static class CopyCoalescer
         {
             var a = groups.Find(destination);
             var b = groups.Find(source);
+
+            if (pinned.Contains(a) || pinned.Contains(b))
+            {
+                // The copy stays, but its two ends still hold the same value, so a type known on one of
+                // them is the type of the other. Union used to carry that across; without it the local
+                // the argument is copied into can end up declared as object.
+                a.Type ??= b.Type;
+                b.Type ??= a.Type;
+                continue;
+            }
 
             // different types would need a cast at every use, so do this only when the types agree, or one side is null
             if (a.Type != null && b.Type != null && !ReferenceEquals(a.Type, b.Type))
