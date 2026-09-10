@@ -20,6 +20,12 @@ public static class LocalVariables
     // (CPP2IL_CONST_INT=0 disables); worth +28 strict-compilable methods on the two Assembly-CSharp DLLs.
     private static readonly bool ConstantLocalsAreIntegers = Environment.GetEnvironmentVariable("CPP2IL_CONST_INT") != "0";
 
+    // Resolves a copy whose two ends carry contradictory types. On by default; CPP2IL_UNIFY_COPIES=0 disables.
+    // Measured neutral: STRICT 11,363 -> 11,361, ilverify 762 -> 759. The contradictory copies it targets
+    // are real, but almost none of them reach a slot that fails verification, so it buys nothing while it
+    // does overwrite a type the inference had settled on. Off; CPP2IL_UNIFY_COPIES=1 to retry.
+    private static readonly bool UnifyCopies = Environment.GetEnvironmentVariable("CPP2IL_UNIFY_COPIES") == "1";
+
     // Folds [L+d] where L=B+k back into [B+k+d] so field resolution can see a base it is able to type. On
     // by default (CPP2IL_FOLD_ADDR=0 disables): the single largest measured win, 3,634 -> 4,339 strict
     // methods on its own, and it drops 1,165 markers.
@@ -331,10 +337,69 @@ public static class LocalVariables
             }
         }
 
+        if (UnifyCopies)
+            UnifyContradictoryCopies(method);
+
         ReportUntypedLocalDefinitions(method, addressed);
     }
 
 
+
+    /// <summary>
+    /// Settles the case a monotonic fixpoint cannot: a copy whose two ends were typed by different rules
+    /// and disagree. <see cref="SetTypeIfUnknown"/> never overwrites, so whichever seed fired first wins and
+    /// the contradiction simply stands - `ldloc V_5 (string[]); stloc V_7 (IntPtr)` and 332 verifier errors
+    /// in one method alone.
+    ///
+    /// Only one direction is decided, because only one is ever clear: a reference type comes from metadata -
+    /// a field's declared type, a parameter, a call's return - while a primitive or native int on the other
+    /// end of a plain copy is what numeric propagation guessed. So the reference wins and the numeric guess
+    /// is replaced. Where both ends are references, or both numeric, nothing here can tell which is right
+    /// and both are left alone.
+    ///
+    /// Runs once after the fixpoint has settled, never inside it: overwriting a type is not monotonic, and
+    /// doing it during the loop would stop the loop terminating.
+    /// </summary>
+    private static void UnifyContradictoryCopies(MethodAnalysisContext method)
+    {
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.Move or OpCode.Phi))
+                continue;
+
+            if (instruction.Operands is not [LocalVariable { Type: { } destinationType } destination, ..])
+                continue;
+
+            for (var i = 1; i < instruction.Operands.Count; i++)
+            {
+                if (instruction.Operands[i] is not LocalVariable { Type: { } sourceType } source)
+                    continue;
+
+                if (IsNumericGuess(destinationType) && IsMetadataReference(sourceType))
+                    destination.Type = sourceType;
+                else if (IsNumericGuess(sourceType) && IsMetadataReference(destinationType))
+                    source.Type = destinationType;
+            }
+        }
+    }
+
+    // A number or a raw pointer: what numeric propagation produces when nothing else claimed the local.
+    // Matched by name rather than by signature, because the analysis layer has no AsmResolver type yet -
+    // ToTypeSignature only works once the assembly has been populated.
+    private static bool IsNumericGuess(TypeAnalysisContext type) => type.FullName switch
+    {
+        "System.SByte" or "System.Byte" or "System.Int16" or "System.UInt16" or "System.Int32"
+            or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Char" or "System.Boolean"
+            or "System.Single" or "System.Double" or "System.IntPtr" or "System.UIntPtr" => true,
+        _ => false,
+    };
+
+    // A reference type named by real metadata. The synthetic il2cpp types are excluded: each of those IS a
+    // pointer, so it is no more authoritative than the native int it would be replacing.
+    private static bool IsMetadataReference(TypeAnalysisContext type) =>
+        type is { IsValueType: false } and not (RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
+            or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
+            or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext or ByRefTypeAnalysisContext);
     /// <summary>
     /// Folds a constant interior-pointer computation back into the load that uses it: <c>[L + d]</c> where
     /// <c>L = B + k</c> addresses exactly <c>[B + (k + d)]</c>. il2cpp computes the interior pointer in its
