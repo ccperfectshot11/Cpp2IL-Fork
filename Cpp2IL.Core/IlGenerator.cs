@@ -539,6 +539,11 @@ public static class IlGenerator
         Analysis.StackCoercion.UnboxArithmeticOperands(body);
         Analysis.StackCoercion.AgreeWithBox(body);
 
+        // Last of the three, and after the zeroing prologue exists rather than before: it reads the
+        // conversions the two above and the per-group reconciliation left behind, and a local it widens
+        // has to have its initobj renamed along with it.
+        Analysis.IntegerWidening.Widen(body);
+
         // The method header declares how deep the evaluation stack goes, and the runtime rejects the whole
         // body when the declared depth is too small - "Stack overflow at offset 0", before a single
         // instruction runs. It is why every recovered method that takes an argument is refused by the JIT
