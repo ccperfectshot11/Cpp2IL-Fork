@@ -38,6 +38,10 @@ public static class IlGenerator
     // Pushes null rather than a native zero where a reference is expected. On by default, worth 45 methods.
     private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") != "0";
 
+    // Reads the primitive out of a single-field wrapper struct before arithmetic. On by default: without it
+    // the IL is invalid and the JIT refuses the method. CPP2IL_UNWRAP_STRUCTS=0 disables.
+    private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
+
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
 
@@ -528,6 +532,138 @@ public static class IlGenerator
             _ => null,
         };
 
+
+    // Puts the primitive left by the arithmetic back into the wrapper the destination is declared as. Emits
+    // nothing at all when the destination is not a wrapper, which is the overwhelmingly common case.
+    private static void RewrapValueStruct(IOperand destination, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, IMethodDescriptor writeLine, CilInstructionCollection instructions)
+    {
+        if (!UnwrapValueStructs || destination is not LocalVariable { Type: { } destinationType } local)
+            return;
+
+        if (SingleValueField(destinationType) is not { } field || !locals.TryGetValue(local, out var ilLocal))
+            return;
+
+        // The value has to be parked while the destination's address goes underneath it: stfld wants the
+        // address first. A scratch slot per field type is enough, and it is reused across the method.
+        var scratch = ScratchLocal(method, field.FieldType.ToTypeSignature());
+
+        // What the arithmetic left on the stack is whatever width its operands ended up with, which is not
+        // always the field's - inference regularly settles on int32 for a value that is really a long. IL
+        // has no implicit widening, so storing one into the other is invalid and the JIT refuses the method.
+        // The conversion states the width the field actually has.
+        if (field.FieldType.ToTypeSignature() is CorLibTypeSignature { ElementType: var fieldElement })
+            switch (fieldElement)
+            {
+                case AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I8 or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8:
+                    instructions.Add(CilOpCodes.Conv_I8);
+                    break;
+                case AsmResolver.PE.DotNet.Metadata.Tables.ElementType.R4:
+                    instructions.Add(CilOpCodes.Conv_R4);
+                    break;
+                case AsmResolver.PE.DotNet.Metadata.Tables.ElementType.R8:
+                    instructions.Add(CilOpCodes.Conv_R8);
+                    break;
+            }
+
+        instructions.Add(CilOpCodes.Stloc, scratch);
+        instructions.Add(CilOpCodes.Ldloca, ilLocal);
+        instructions.Add(CilOpCodes.Ldloc, scratch);
+        instructions.Add(CilOpCodes.Stfld, field.ToFieldDescriptor());
+
+        // StoreToOperand runs next and expects a value to store, so hand it the wrapper it just filled in.
+        instructions.Add(CilOpCodes.Ldloc, ilLocal);
+    }
+
+    // Always a fresh slot. Reusing one that merely has the right type would silently clobber a real local
+    // holding a live value, which is a correctness bug traded for a handful of bytes.
+    private static CilLocalVariable ScratchLocal(MethodDefinition method, TypeSignature type)
+    {
+        var created = new CilLocalVariable(type);
+        method.CilMethodBody!.LocalVariables.Add(created);
+        return created;
+    }
+
+    // Boxes a primitive result before it is stored into a local that has no type, so the store is legal and
+    // the matching unbox on the way out lines up. Emits nothing when the destination is typed.
+    private static void BoxIntoUntypedLocal(IOperand destination, TypeAnalysisContext? resultType, CilInstructionCollection instructions)
+    {
+        if (!UnwrapValueStructs || destination is not LocalVariable { Type: null } || resultType == null)
+            return;
+
+        if (resultType.ToTypeSignature() is not CorLibTypeSignature { ElementType: not AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Object })
+            return;
+
+        instructions.Add(CilOpCodes.Box, resultType.ToTypeSignature().ToTypeDefOrRef());
+    }
+
+    // The primitive an arithmetic instruction leaves on the stack: the operand's own type, or the primitive
+    // inside it once a single-field wrapper has been unwrapped.
+    private static TypeAnalysisContext? ArithmeticResultType(Instruction instruction, MethodAnalysisContext context)
+    {
+        for (var i = 1; i < instruction.Operands.Count; i++)
+        {
+            if (OperandType(instruction.Operands[i]) is not { } operandType)
+                continue;
+
+            if (SingleValueField(operandType) is { } wrapped)
+                return wrapped.FieldType;
+
+            if (operandType.ToTypeSignature() is CorLibTypeSignature)
+                return operandType;
+        }
+
+        return null;
+    }
+
+    // The type a loaded operand leaves on the stack, which is what decides whether it needs unwrapping.
+    private static TypeAnalysisContext? OperandType(IOperand operand) => operand switch
+    {
+        LocalVariable local => local.Type,
+        FieldReference field => field.ResultType,
+        _ => null,
+    };
+
+    /// <summary>
+    /// The single primitive instance field a wrapper struct stores its whole value in - Photon Quantum's
+    /// <c>FP</c> is a <c>long RawValue</c>, and the game is full of these. il2cpp keeps such a struct in a
+    /// register exactly as if it were the primitive, so the lifter sees `add` on two of them and emits
+    /// `ldarg; ldarg; add` against the struct type. That is invalid IL: the JIT refuses the method outright,
+    /// which is why 607 of the 1,285 fuzzable methods with parameters throw InvalidProgramException and every
+    /// argument-taking FP method fails. Reading the field first is what the original source compiled to.
+    /// </summary>
+    private static FieldAnalysisContext? SingleValueField(TypeAnalysisContext? type)
+    {
+        if (type is not { IsValueType: true } || type.IsEnumType || type.ToTypeSignature() is CorLibTypeSignature)
+            return null;
+
+        FieldAnalysisContext? only = null;
+
+        foreach (var field in type.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            // Two fields and there is no single value to unwrap to - a vector, a struct of structs.
+            if (only != null)
+                return null;
+
+            only = field;
+        }
+
+        return only?.FieldType.ToTypeSignature() is CorLibTypeSignature ? only : null;
+    }
+
+    // Reads the wrapper's value out so the arithmetic opcode gets the primitive it needs. The operand is
+    // already on the stack, so this only ever appends the read.
+    private static void UnwrapValueStruct(IOperand operand, TypeAnalysisContext? loadedType, CilInstructionCollection instructions)
+    {
+        if (!UnwrapValueStructs || operand is Immediate or FloatLiteral or DoubleLiteral)
+            return;
+
+        if (SingleValueField(loadedType) is { } field)
+            instructions.Add(CilOpCodes.Ldfld, field.ToFieldDescriptor());
+    }
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
     private static string Diagnostic(string message) 
         => message.Length <= 250 ? message : message[..250] + "…";
@@ -900,6 +1036,7 @@ public static class IlGenerator
                 if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
                 {
                     LoadOperand(instruction.Operands[1], method, locals, writeLine, leftType);
+                    UnwrapValueStruct(instruction.Operands[1], OperandType(instruction.Operands[1]), instructions);
                     if (floatConversion is { } conv1)
                         instructions.Add(conv1);
                 }
@@ -915,6 +1052,7 @@ public static class IlGenerator
                     };
 
                     LoadOperand(instruction.Operands[2], method, locals, writeLine, rightType);
+                    UnwrapValueStruct(instruction.Operands[2], OperandType(instruction.Operands[2]), instructions);
                     if (floatConversion is { } conv2)
                         instructions.Add(conv2);
                 }
@@ -957,6 +1095,19 @@ public static class IlGenerator
                     case OpCode.Or: instructions.Add(CilOpCodes.Or); break;
                     case OpCode.Xor: instructions.Add(CilOpCodes.Xor); break;
                 }
+
+                // The operands were unwrapped to their primitive, so the result is a primitive too, and the
+                // destination is not. Rewrapping keeps both halves consistent; without it the store is the
+                // invalid IL the unwrap was there to remove.
+                if (!isComparison)
+                    RewrapValueStruct(instruction.Operands[0], method, locals, writeLine, instructions);
+
+                // A local the inference never typed is declared `object`, and a primitive cannot be stored
+                // into one unboxed - that is invalid IL, so the JIT refuses the whole method. It is the
+                // reason arithmetic-carrying methods are unrunnable even when they compile: FPVector2::Dot
+                // multiplies two longs and stores the result into an `object` slot. Boxing is also what the
+                // reads further down already assume, since CastUntypedLocal unboxes them again.
+                BoxIntoUntypedLocal(instruction.Operands[0], ArithmeticResultType(instruction, context), instructions);
 
                 StoreToOperand(instruction.Operands[0], method, locals, writeLine);
                 break;
@@ -1147,8 +1298,26 @@ public static class IlGenerator
     // - and that is the CS0019 `IntPtr & int` family, 694 methods, plus the `IntPtr >= IntPtr`
     // comparisons, 556 more. A zero is a zero in any width, so give it the one the use site expects and the
     // arithmetic around it stays writable.
-    private static void PushPlaceholderZero(TypeAnalysisContext? expectedType, CilInstructionCollection instructions)
+    private static void PushPlaceholderZero(TypeAnalysisContext? expectedType, MethodDefinition method, CilInstructionCollection instructions)
     {
+        // A struct is not a number, and a native zero standing in for one is invalid IL, not merely ugly
+        // C#: the JIT refuses the whole method. That is what makes `FPMatrix2x2.get_Zero` and a large share
+        // of the Quantum maths unrunnable - 120 of 157 fuzzable methods there throw InvalidProgramException.
+        // A zeroed local of the right type is the stand-in that actually has that type.
+        if (expectedType is { IsValueType: true } && expectedType.ToTypeSignature() is not CorLibTypeSignature
+            && expectedType is not (RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
+                or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
+                or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext or ByRefTypeAnalysisContext)
+            && expectedType.GetExtraData<TypeDefinition>("AsmResolverType") != null)
+        {
+            var zeroed = ScratchLocal(method, expectedType.ToTypeSignature());
+
+            instructions.Add(CilOpCodes.Ldloca, zeroed);
+            instructions.Add(CilOpCodes.Initobj, expectedType.ToTypeSignature().ToTypeDefOrRef());
+            instructions.Add(CilOpCodes.Ldloc, zeroed);
+            return;
+        }
+
         // A reference is compared and assigned as a reference, so its stand-in has to be null; a native zero
         // there is the same CS0019 in a different disguise. The synthetic il2cpp types are excluded: they
         // are not value types either, but each one IS a pointer and is emitted as one.
@@ -1411,7 +1580,7 @@ public static class IlGenerator
                 Analysis.MarkerDiag.Record(memory, method);
                 instructions.Add(CilOpCodes.Ldstr, Diagnostic("Unmanaged memory load: " + operand));
                 instructions.Add(CilOpCodes.Call, writeLine);
-                PushPlaceholderZero(expectedType, instructions);
+                PushPlaceholderZero(expectedType, method, instructions);
                 break;
             case RuntimeMethodInfoAnalysisContext runtimeMethod:
                 // A delegate constructor takes its target as a native pointer, which is exactly ldftn.
@@ -1422,7 +1591,7 @@ public static class IlGenerator
                 }
 
                 //Not fully implemented, these basically shouldn't actually ever exist in the final IL.
-                PushPlaceholderZero(expectedType, instructions);
+                PushPlaceholderZero(expectedType, method, instructions);
                 break;
             case RuntimeFieldInfoAnalysisContext runtimeField:
                 // fieldof(F), e.g. the handle InitializeArray takes.
@@ -1432,11 +1601,11 @@ public static class IlGenerator
                     break;
                 }
 
-                PushPlaceholderZero(expectedType, instructions);
+                PushPlaceholderZero(expectedType, method, instructions);
                 break;
             case RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
                 or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext:
-                PushPlaceholderZero(expectedType, instructions);
+                PushPlaceholderZero(expectedType, method, instructions);
                 break;
             case TypeAnalysisContext type:
                 //typeof(T)
