@@ -402,9 +402,22 @@ public static class IlGenerator
                 // 5,887 occurrences of that one line. The zeroing was never needed anyway: the body sets
                 // InitializeLocals, so the runtime has already done it, and this whole pass exists only to
                 // convince the C# compiler's definite-assignment check, which a native int does not need.
+                // A native int is zeroed differently. `initobj System.IntPtr` is legal IL, but the
+                // decompiler renders it as `IntPtr x = 0;` and C# has no implicit int-to-IntPtr
+                // conversion - 5,887 occurrences of that one line. Skipping it outright then left the
+                // local unassigned as far as the C# compiler could tell, which is CS0165 on 162 methods.
+                // Reading IntPtr.Zero is the same zero, and it decompiles to something C# accepts.
                 if (ilLocal.VariableType is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I
                     or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U })
+                {
+                    var zero = module.CorLibTypeFactory.CorLibScope
+                        .CreateTypeReference("System", "IntPtr")
+                        .CreateMemberReference("get_Zero", MethodSignature.CreateStatic(module.CorLibTypeFactory.IntPtr));
+
+                    localInitialisation.Add(new CilInstruction(CilOpCodes.Call, zero));
+                    localInitialisation.Add(new CilInstruction(CilOpCodes.Stloc, ilLocal));
                     continue;
+                }
 
                 localInitialisation.Add(new CilInstruction(CilOpCodes.Ldloca, ilLocal));
                 localInitialisation.Add(new CilInstruction(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef()));
