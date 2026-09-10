@@ -74,6 +74,14 @@ public enum OpCode
     /// <summary>Shifts the bits of op 2 right by op 3, and moves the result into op 1</summary>
     ShiftRight,
 
+    /// <summary>
+    /// Shifts the bits of op 2 right by op 3 filling the vacated bits with zeroes, and moves the result
+    /// into op 1. Sits next to <see cref="ShiftRight"/> rather than at the end of the enum because the
+    /// only range anything tests over these values is CheckEqual..CheckLessOrEqual, and inserting ahead
+    /// of it moves both of its endpoints together.
+    /// </summary>
+    ShiftRightUnsigned,
+
     /// <summary>Bitwise AND on op 2 and op 3, moves the result into op 1</summary>
     And,
 

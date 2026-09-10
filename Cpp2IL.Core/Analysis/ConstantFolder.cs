@@ -44,6 +44,9 @@ public static class ConstantFolder
                 case OpCode.Xor: return ToConstant(instruction, a ^ b);
                 case OpCode.ShiftLeft: return ToConstant(instruction, a << (int)(b & 0x3F));
                 case OpCode.ShiftRight: return ToConstant(instruction, a >> (int)(b & 0x3F));
+                // Folding the zero-filled shift with C#'s signed >> would put back exactly the sign
+                // extension the opcode exists to record, so the constant is shifted as unsigned too.
+                case OpCode.ShiftRightUnsigned: return ToConstant(instruction, unchecked((long)((ulong)a >> (int)(b & 0x3F))));
             }
         }
 
@@ -64,6 +67,7 @@ public static class ConstantFolder
             case OpCode.Subtract:
             case OpCode.ShiftLeft:
             case OpCode.ShiftRight:
+            case OpCode.ShiftRightUnsigned:
                 // right identity only: x - 0 / x << 0 / x >> 0 == x, but 0 - x etc. are not
                 return Constant(instruction.Operands[2]) == 0 && ToMove(instruction, instruction.Operands[1]);
         }

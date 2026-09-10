@@ -754,7 +754,8 @@ public static class IlGenerator
         foreach (var instruction in context.ControlFlowGraph!.Instructions)
         {
             if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
-                or OpCode.Modulo or OpCode.And or OpCode.Or or OpCode.Xor or OpCode.ShiftLeft or OpCode.ShiftRight))
+                or OpCode.Modulo or OpCode.And or OpCode.Or or OpCode.Xor or OpCode.ShiftLeft or OpCode.ShiftRight
+                or OpCode.ShiftRightUnsigned))
                 continue;
 
             if (instruction.Operands[0] is not LocalVariable { Type: null } destination)
@@ -1466,6 +1467,7 @@ public static class IlGenerator
 
             case OpCode.ShiftLeft:
             case OpCode.ShiftRight:
+            case OpCode.ShiftRightUnsigned:
 
             case OpCode.And:
             case OpCode.Or:
@@ -1506,7 +1508,7 @@ public static class IlGenerator
                 var rightType = instruction.OpCode switch
                 {
                     // A shift's second operand is the count, always an int32, never the result type.
-                    OpCode.ShiftLeft or OpCode.ShiftRight => null,
+                    OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned => null,
                     _ when isComparison => ComparisonTypes
                         ? ComparisonOperandType(instruction, 1, context) ?? leftType
                         : PlaceholderComparisonType(instruction, 2, context),
@@ -1573,6 +1575,11 @@ public static class IlGenerator
 
                     case OpCode.ShiftLeft: instructions.Add(CilOpCodes.Shl); break;
                     case OpCode.ShiftRight: instructions.Add(CilOpCodes.Shr); break;
+
+                    // The lifter kept x86's `shr` apart from its `sar`, so the zero fill the hardware
+                    // actually performed survives to here instead of being replaced by a sign extension
+                    // the original code never asked for.
+                    case OpCode.ShiftRightUnsigned: instructions.Add(CilOpCodes.Shr_Un); break;
 
                     case OpCode.And: instructions.Add(CilOpCodes.And); break;
                     case OpCode.Or: instructions.Add(CilOpCodes.Or); break;

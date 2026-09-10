@@ -100,6 +100,7 @@ public class Instruction : IOperand
             case OpCode.Modulo:
             case OpCode.ShiftLeft:
             case OpCode.ShiftRight:
+            case OpCode.ShiftRightUnsigned:
             case OpCode.And:
             case OpCode.Or:
             case OpCode.Xor:
@@ -157,7 +158,7 @@ public class Instruction : IOperand
             OpCode.Box => [_operands[2]],
 
             OpCode.Add or OpCode.Subtract or OpCode.Multiply
-                or OpCode.Divide or OpCode.Modulo or OpCode.ShiftLeft or OpCode.ShiftRight
+                or OpCode.Divide or OpCode.Modulo or OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned
                 or OpCode.And or OpCode.Or or OpCode.Xor
                 => [_operands[2], _operands[1]],
 

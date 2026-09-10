@@ -34,6 +34,19 @@ public class X86InstructionSet : Cpp2IlInstructionSet
     /// </summary>
     private static readonly bool XmmLanes = Environment.GetEnvironmentVariable("CPP2IL_XMM_LANES") != "0";
 
+    /// <summary>
+    /// Keeps x86's two right shifts apart instead of lifting both to the one arithmetic shift. `shr`
+    /// fills the vacated bits with zeroes and `sar` with copies of the sign bit, and that choice is the
+    /// only record the binary keeps of whether the value being shifted was signed; collapsing the pair
+    /// threw it away before emission could ever see it, and emission then had to pick one for both - it
+    /// picked the signed one. So every rotate built the usual way, as `(x &lt;&lt; n) | (x &gt;&gt; (32 - n))`,
+    /// returned garbage the moment x had its top bit set: the right half flooded the result with ones
+    /// instead of handing back the bits the left half had shifted out. MurmurHash's Update is exactly
+    /// that shape, which is why its hash diverges from the running game's from the first such input on.
+    /// CPP2IL_UNSIGNED_SHR=0 goes back to lifting both as the signed shift.
+    /// </summary>
+    private static readonly bool UnsignedShiftRight = Environment.GetEnvironmentVariable("CPP2IL_UNSIGNED_SHR") != "0";
+
     private const int LaneBytes = 4;
 
     // Lane 0 is the register itself, so a value that only ever lived in the low lane is the same operand
@@ -451,8 +464,11 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             case Mnemonic.Sal: // signed shift
                 Add(instruction.IP, ISIL.OpCode.ShiftLeft, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
-            case Mnemonic.Shr: // unsigned shift
-            case Mnemonic.Sar: // signed shift
+            case Mnemonic.Shr: // logical shift - zero fill
+                Add(instruction.IP, UnsignedShiftRight ? ISIL.OpCode.ShiftRightUnsigned : ISIL.OpCode.ShiftRight,
+                    ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                break;
+            case Mnemonic.Sar: // arithmetic shift - sign fill
                 Add(instruction.IP, ISIL.OpCode.ShiftRight, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
             case Mnemonic.And:

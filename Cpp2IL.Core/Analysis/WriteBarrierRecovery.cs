@@ -345,14 +345,14 @@ public static class WriteBarrierRecovery
                 sawBitmapStore = true;
                 return true;
 
-            case OpCode.ShiftRight when instruction.Operands is [LocalVariable, _, Immediate { Value: 12 }]:
+            case OpCode.ShiftRight or OpCode.ShiftRightUnsigned when instruction.Operands is [LocalVariable, _, Immediate { Value: 12 }]:
                 sawPageShift = true;
                 return true;
 
             case OpCode.Move:
             case OpCode.Phi:
             case OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Modulo:
-            case OpCode.ShiftLeft or OpCode.ShiftRight:
+            case OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned:
             case OpCode.And or OpCode.Or or OpCode.Xor or OpCode.Not or OpCode.Negate:
             case >= OpCode.CheckEqual and <= OpCode.CheckLessOrEqual:
                 return instruction.Operands is [LocalVariable, ..]; // computes into a local, no side effects

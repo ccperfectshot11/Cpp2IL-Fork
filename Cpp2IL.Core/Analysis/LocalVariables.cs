@@ -1107,7 +1107,7 @@ public static class LocalVariables
                     changed |= PropagateArithmetic(instruction, method, addressed) || PropagateIntegerResult(instruction, method, addressed);
                     break;
                 case OpCode.And or OpCode.Or or OpCode.Xor or OpCode.Not or OpCode.Negate
-                    or OpCode.ShiftLeft or OpCode.ShiftRight:
+                    or OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned:
                     changed |= PropagateIntegerResult(instruction, method, addressed);
                     break;
             }
