@@ -67,6 +67,10 @@ public static class IlGenerator
     // Does an ordering comparison of native ints on int64. On by default (CPP2IL_NINT_CMP=0 disables).
     private static readonly bool NativeIntOrdering = Environment.GetEnvironmentVariable("CPP2IL_NINT_CMP") != "0";
 
+    // Lets a fabricated zero standing opposite a typeof operand be pushed as a reference rather than as a
+    // native int. On by default (CPP2IL_TYPE_HANDLE=0 disables).
+    private static readonly bool TypeOperandComparisons = Environment.GetEnvironmentVariable("CPP2IL_TYPE_HANDLE") != "0";
+
     // Reads a backing field owned by another type through its property. On by default (CPP2IL_BACKING_PROP=0).
     private static readonly bool RouteBackingFields = Environment.GetEnvironmentVariable("CPP2IL_BACKING_PROP") != "0";
 
@@ -625,6 +629,15 @@ public static class IlGenerator
             // has to match: an immediate in int range becomes ldc.i4, anything wider ldc.i8.
             Immediate { Value: >= int.MinValue and <= int.MaxValue } => context.AppContext.SystemTypes.SystemInt32Type,
             Immediate => context.AppContext.SystemTypes.SystemInt64Type,
+            // Likewise for a type operand: LoadOperand turns it into typeof(T), so what the other side has
+            // to match is a System.Type. This is the whole of the `IntPtr == Type` family - il2cpp tested
+            // the Il2CppClass* it had just loaded against NULL, and where the load beside it never
+            // recovered, that NULL is fabricated and lands as a native int. Pushed as a reference the test
+            // reads `typeof(T) != null`, which compiles and claims exactly as little as the pointer
+            // comparison it replaces. The synthetic il2cpp handles are excluded because they are not
+            // emitted as typeof at all - each one IS a pointer, and PushPlaceholderZero already covers them.
+            TypeAnalysisContext typeOperand when TypeOperandComparisons && !IsUnrecoverableOperand(typeOperand)
+                => context.AppContext.SystemTypes.SystemTypeType,
             _ => null,
         };
 

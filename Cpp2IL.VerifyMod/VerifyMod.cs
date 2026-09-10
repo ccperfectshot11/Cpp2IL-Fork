@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using Cpp2IL.VerifyCore;
 using MelonLoader;
+using MelonLoader.Utils;
 using UnityEngine;
 
 [assembly: MelonInfo(typeof(Cpp2IL.VerifyMod.VerifyMod), "Cpp2IL VerifyMod", "1.0", "Cpp2IL")]
@@ -183,6 +184,8 @@ public class VerifyMod : MelonMod
     {
         var index = new Dictionary<string, MethodBase>(StringComparer.Ordinal);
 
+        LoadEveryInteropAssembly();
+
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             // The mod's own assemblies would otherwise index the RECOVERED methods sitting next to it and
@@ -212,6 +215,46 @@ public class VerifyMod : MelonMod
         }
 
         return index;
+    }
+
+    /// <summary>
+    /// Forces every Il2CppInterop assembly to load before the index is built.
+    ///
+    /// They load lazily - only when something first touches a type in them - so at mod-init time the
+    /// domain holds whatever the game happened to need so far, and everything else is simply absent.
+    /// Indexing that gives an index that looks complete and is not: 273 Phase 1 methods came back
+    /// "could not find" against a build that certainly contains them, and the ones that vanished were
+    /// whole types at a time (FPMathUtils, UIGradientUtils, BattlePassLevel) rather than a scattering,
+    /// which is what an unloaded assembly looks like from the outside.
+    /// </summary>
+    private void LoadEveryInteropAssembly()
+    {
+        var directory = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "Il2CppAssemblies");
+
+        if (!Directory.Exists(directory))
+        {
+            LoggerInstance.Warning($"No Il2CppAssemblies at {directory}; the index will only see what is already loaded.");
+            return;
+        }
+
+        var loaded = 0;
+
+        foreach (var path in Directory.GetFiles(directory, "*.dll"))
+        {
+            try
+            {
+                // By name, not from the file: loading the same assembly a second time from its path would
+                // give a duplicate identity, and every type in it would compare unequal to the game's own.
+                Assembly.Load(AssemblyName.GetAssemblyName(path));
+                loaded++;
+            }
+            catch (Exception)
+            {
+                // A dependency that will not resolve costs that one assembly, not the run.
+            }
+        }
+
+        LoggerInstance.Msg($"Loaded {loaded} interop assemblies before indexing.");
     }
 
     private static void IndexType(Type type, Dictionary<string, MethodBase> index)
