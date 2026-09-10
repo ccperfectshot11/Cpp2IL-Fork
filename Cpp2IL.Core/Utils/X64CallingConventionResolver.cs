@@ -23,8 +23,13 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
     // the slots from zero named a slot the body never touches: measured over the whole game, only 1.225 of
     // 16.165 stack parameters ever matched a local, and those that did matched the slot belonging to a
     // DIFFERENT parameter, so they were typed wrong rather than left untyped.
-    // On by default; CPP2IL_STACK_PARAMS=0 restores the old numbering.
-    private static readonly bool CorrectStackParameterBase = Environment.GetEnvironmentVariable("CPP2IL_STACK_PARAMS") != "0";
+    // MEASURED WORSE, off by default; CPP2IL_STACK_PARAMS=1 to retry. The +0x28 base is right in
+    // principle - a callee does read its stack arguments past the return address and the shadow space -
+    // but bisecting the two halves of the stack-frame work showed this one costs 197 strict methods on its
+    // own (12,039 -> 11,842) while adding only 73 marker-free ones. Roughly 10,000 of the 16,165 stack
+    // parameters still find no local at either base, so the correction currently retypes a minority
+    // correctly and disturbs the rest; the frame-alias fix beside it is the half that pays.
+    private static readonly bool CorrectStackParameterBase = Environment.GetEnvironmentVariable("CPP2IL_STACK_PARAMS") == "1";
 
     private const int PeReturnAddressAndShadowSpace = 0x28;
     private const int SysVReturnAddress = 0x8;
