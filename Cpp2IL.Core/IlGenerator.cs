@@ -465,6 +465,41 @@ public static class IlGenerator
         body.Instructions.InsertRange(at, initialisation);
     }
 
+    // True when the value being returned is an exception and the method's own return type is not one, which
+    // means the lifter dropped a throw rather than the source really returning it. A method that genuinely
+    // returns an exception - a factory, or anything returning System.Object - is left alone.
+    private static bool ReturnsMisplacedException(IOperand returned, TypeAnalysisContext? returnType)
+    {
+        if (returned is not (LocalVariable or FieldReference) || returnType == null || IsException(returnType))
+            return false;
+
+        var returnedType = returned switch
+        {
+            LocalVariable local => local.Type,
+            FieldReference field => field.ResultType,
+            _ => null,
+        };
+
+        return returnedType != null && IsException(returnedType);
+    }
+
+    // Walks the base chain rather than matching a name: the throw helpers build ArgumentException,
+    // InvalidCastException and others besides the two common ones.
+    private static bool IsException(TypeAnalysisContext type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            if (current.FullName == "System.Exception")
+                return true;
+
+            // A cycle in a recovered base chain would otherwise hang the whole run.
+            if (ReferenceEquals(current.BaseType, current))
+                return false;
+        }
+
+        return false;
+    }
+
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
     private static string Diagnostic(string message) 
         => message.Length <= 250 ? message : message[..250] + "…";
@@ -741,6 +776,20 @@ public static class IlGenerator
                 break;
 
             case OpCode.Return:
+                // Returning an exception from a method that does not return one is not what the original
+                // did - it threw. il2cpp emits its null and bounds checks as a branch that builds the
+                // exception and hands it to a throw helper, and where the lifter loses the helper call the
+                // tail looks like an ordinary return of the value that was just constructed. Restoring the
+                // throw is both what the source said and the only form that compiles: 968 methods return a
+                // NullReferenceException and 77 an IndexOutOfRangeException, all CS0029.
+                if (!context.IsVoid && instruction.Operands.Count == 1
+                    && ReturnsMisplacedException(instruction.Operands[0], context.ReturnType))
+                {
+                    LoadOperand(instruction.Operands[0], method, locals, writeLine);
+                    instructions.Add(CilOpCodes.Throw);
+                    break;
+                }
+
                 if (!context.IsVoid)
                 {
                     if (instruction.Operands.Count == 1)

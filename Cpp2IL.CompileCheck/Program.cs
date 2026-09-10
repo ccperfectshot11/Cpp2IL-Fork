@@ -112,6 +112,7 @@ internal static class Program
         Console.WriteLine($"  LENIENT : {mfOk:N0}  ({P(mfOk, mfTotal):F1}%)");
         Console.WriteLine($"  STRICT  : {mfOkStrict:N0}  ({P(mfOkStrict, mfTotal):F1}%)   <== marker-free that truly recompile");
         Console.WriteLine($"class-level errors (count) : {classLevelErrors:N0}");
+        PrintSourceLines();
         if (oomBatches > 0) Console.WriteLine($"OOM batches (skipped)      : {oomBatches}");
 
         Console.WriteLine();
@@ -264,6 +265,7 @@ internal static class Program
                         typeClassCodes.Add(id);
                     }
                     ErrExample.TryAdd(id, Trim(msg));
+                    RecordSourceLine(id, tree, span);
                 }
             }
 
@@ -308,6 +310,37 @@ internal static class Program
     }
 
     private static string Trim(string s) => s.Length <= 140 ? s : s.Substring(0, 140);
+
+    // Every diagnosis in this project that started from the `e.g.` message alone has been wrong, because
+    // one error code covers several distinct bugs and the message says nothing about the code that
+    // produced it. CPP2IL_CC_LINES=CS0201,CS1061 collects the actual offending source lines for those
+    // codes, normalised and counted, so the real shape distribution is visible instead of guessed at.
+    private static readonly HashSet<string> LineCodes = new(
+        (Environment.GetEnvironmentVariable("CPP2IL_CC_LINES") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries),
+        StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, long> ErrLines = new();
+
+    private static void RecordSourceLine(string id, SyntaxTree tree, TextSpan span)
+    {
+        if (LineCodes.Count == 0 || !LineCodes.Contains(id))
+            return;
+
+        var text = tree.GetText();
+        var line = text.Lines.GetLineFromPosition(span.Start).ToString().Trim();
+
+        ErrLines.AddOrUpdate($"{id} | {Trim(line)}", 1, (_, v) => v + 1);
+    }
+
+    private static void PrintSourceLines()
+    {
+        if (ErrLines.IsEmpty)
+            return;
+
+        Console.WriteLine();
+        Console.WriteLine("-- offending source lines (CPP2IL_CC_LINES) --");
+        foreach (var kv in ErrLines.OrderByDescending(k => k.Value).Take(40))
+            Console.WriteLine($"  {kv.Value,6}  {kv.Key}");
+    }
 
     private static readonly System.Text.RegularExpressions.Regex Quoted =
         new(@"'([^']*)'", System.Text.RegularExpressions.RegexOptions.Compiled);
