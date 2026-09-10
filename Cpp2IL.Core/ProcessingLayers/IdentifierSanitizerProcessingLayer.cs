@@ -22,6 +22,19 @@ namespace Cpp2IL.Core.ProcessingLayers;
 ///
 /// <c>.ctor</c>, <c>.cctor</c> and <c>&lt;Module&gt;</c> are left alone: those names are structural, the
 /// runtime looks them up by name, and the emitter already handles them.
+///
+/// MEASURED HARMFUL - do not put this in the pipeline. The decompiler recognises compiler-generated
+/// constructs by exactly these names: <c>&lt;&gt;c__DisplayClass</c> is how it knows a closure, and
+/// <c>&lt;X&gt;b__0</c> how it knows the lambda inside it. Rename them and it stops recognising them, so
+/// the lambdas stop being folded back into their parent method and are emitted as standalone methods on a
+/// visible display class. That is the opposite of the goal: the output moves further from the original
+/// source, not closer. It shows up as the method count going 16,676 -> 18,390 on the two Assembly-CSharp
+/// DLLs, which also makes every percentage measured with this layer incomparable to one measured without.
+///
+/// The problem it was written for - a cross-assembly read of <c>&lt;X&gt;k__BackingField</c> not resolving
+/// against the sanitised spelling the decompiler prints - is solved properly in
+/// <c>IlGenerator.TryEmitBackingFieldRead</c>, which routes the read through the property instead and
+/// leaves every generated name intact. Kept only so the experiment can be repeated.
 /// </summary>
 public class IdentifierSanitizerProcessingLayer : Cpp2IlProcessingLayer
 {
