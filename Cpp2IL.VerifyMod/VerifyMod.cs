@@ -30,6 +30,8 @@ public class VerifyMod : MelonMod
 
     private string _directory;
     private bool _ran;
+    private bool _auto;
+    private int _frames;
 
     public override void OnInitializeMelon()
     {
@@ -41,9 +43,18 @@ public class VerifyMod : MelonMod
             return;
         }
 
-        LoggerInstance.Msg("Phase 1 file found. Press F9 in-game to run the verification sweep.");
-        LoggerInstance.Msg("It takes minutes and calls thousands of game methods with hostile inputs, so it is");
-        LoggerInstance.Msg("deliberately not automatic: a sweep at startup would look like the game had frozen.");
+        _auto = Environment.GetEnvironmentVariable("CPP2IL_VERIFY_AUTO") == "1";
+
+        if (_auto)
+        {
+            LoggerInstance.Msg("CPP2IL_VERIFY_AUTO=1: the sweep starts by itself once the game is up.");
+        }
+        else
+        {
+            LoggerInstance.Msg("Phase 1 file found. Press F9 in-game to run the verification sweep.");
+            LoggerInstance.Msg("It takes minutes and calls thousands of game methods with hostile inputs, so it is");
+            LoggerInstance.Msg("not automatic by default: a sweep at startup would look like the game had frozen.");
+        }
     }
 
     // Triggered rather than automatic, and the reason is not politeness. The sweep calls real game code
@@ -52,7 +63,16 @@ public class VerifyMod : MelonMod
     // and the crash journal below must already name the culprit so the next run gets past it.
     public override void OnUpdate()
     {
-        if (_ran || !Input.GetKeyDown(KeyCode.F9))
+        if (_ran)
+            return;
+
+        // Automatic mode waits a few frames rather than starting at the first one: Il2CppInterop fills in
+        // its type cache lazily, and indexing the game's assemblies before it has settled finds fewer
+        // methods, which would read as "the game does not have them" instead of "we asked too early".
+        if (_auto && ++_frames < 300)
+            return;
+
+        if (!_auto && !Input.GetKeyDown(KeyCode.F9))
             return;
 
         _ran = true;
@@ -144,6 +164,14 @@ public class VerifyMod : MelonMod
 
         LoggerInstance.Msg($"Resolved {resolved}, could not find {missing}. Wrote {results.Count} signatures to {outputPath}.");
         LoggerInstance.Msg("Compare with: Cpp2IL.VerifyCheck --compare phase1.json phase2.json");
+
+        // A scripted run has to end by itself, or the harness would wait for a window nobody is going to
+        // close. Interactive runs stay up, because the point there is to keep playing.
+        if (_auto)
+        {
+            LoggerInstance.Msg("VERIFY_DONE");
+            UnityEngine.Application.Quit();
+        }
     }
 
     /// <summary>
