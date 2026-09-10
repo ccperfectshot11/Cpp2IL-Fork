@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Linq;
 using AsmResolver;
 using AsmResolver.DotNet;
+using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Signatures;
+using AsmResolver.PE.DotNet.Cil;
 using AsmResolver.PE.DotNet.Metadata.Tables;
+using AssetRipper.CIL;
 using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Model.CustomAttributes;
 using LibCpp2IL.BinaryStructures;
@@ -13,6 +16,34 @@ namespace Cpp2IL.Core.Utils.AsmResolver;
 
 public static class AsmResolverAssemblyPopulator
 {
+    /// <summary>
+    /// il2cpp inlines an event's add and remove accessors into whoever calls them, so the recovered code
+    /// writes the event's backing field directly - and that field carries the event's own name. A field
+    /// named after an event is the event's storage, so the decompiler hides it and prints every access to
+    /// it as the event itself: <c>this.OnEntityInstantiated = delegate4</c>. Only += and -= may name an
+    /// event, which is 3,114 CS0079 over 725 methods, a fifth of them writing the field on another type.
+    ///
+    /// Renaming the field is what makes those accesses printable again, and the event keeps its own name,
+    /// so every += and -= still reads the way the original source wrote it. The rename costs nothing: the
+    /// decompiler folds an event back into <c>event T X;</c> only when it recognises the accessor bodies as
+    /// the Interlocked.CompareExchange loop the C# compiler emits, and it recognises none of the 214 events
+    /// recovered here - the field was never going to disappear into a field-like declaration anyway.
+    /// </summary>
+    private static readonly bool RenameEventBackingFields = Environment.GetEnvironmentVariable("CPP2IL_EVENT_FIELD") != "0";
+
+    /// <summary>
+    /// A named argument is the only reason an attribute property still has a setter: il2cpp emits the code
+    /// that constructs the attribute and calls the setter once per named argument, while nothing in a player
+    /// build ever reads the value back, so the getter is stripped. What is left is a write-only property,
+    /// and C# takes only a read-write one as a named argument - CS0617 on every type carrying the attribute,
+    /// 245 methods of it from <c>[CreateAssetMenu(menuName = ...)]</c> alone.
+    ///
+    /// The getter goes back rather than the argument coming out, because the original source cannot have
+    /// said anything else: a name written on the left of = inside an attribute was a read-write property
+    /// there, so the assembly declared one and stripping is the only thing that happened to it since.
+    /// </summary>
+    private static readonly bool RestoreStrippedAttributeGetters = Environment.GetEnvironmentVariable("CPP2IL_ATTR_GETTER") != "0";
+
     public static bool IsTypeContextModule(TypeAnalysisContext typeCtx)
     {
         return typeCtx.Name.StartsWith("<Module>") || typeCtx.FullName.StartsWith("<Module>");
@@ -440,6 +471,9 @@ public static class AsmResolverAssemblyPopulator
             var managedGetter = propertyCtx.Getter?.GetExtraData<MethodDefinition>("AsmResolverMethod");
             var managedSetter = propertyCtx.Setter?.GetExtraData<MethodDefinition>("AsmResolverMethod");
 
+            if (managedGetter == null && managedSetter != null)
+                managedGetter = RestoreStrippedGetter(propertyCtx, typeContext, ilTypeDefinition, managedSetter, propertyTypeSig);
+
             managedProperty.SetSemanticMethods(managedGetter, managedSetter);
 
             //Indexer parameters
@@ -466,6 +500,66 @@ public static class AsmResolverAssemblyPopulator
         }
     }
 
+    private static MethodDefinition? RestoreStrippedGetter(PropertyAnalysisContext propertyCtx, TypeAnalysisContext typeContext, TypeDefinition ilTypeDefinition, MethodDefinition managedSetter, TypeSignature propertyTypeSig)
+    {
+        // Only on an attribute, where a write-only property has no other explanation. Anywhere else one is
+        // a member the author meant to be write-only, and giving it a getter invents API that never existed.
+        if (!RestoreStrippedAttributeGetters || managedSetter.IsAbstract || !InheritsAttribute(typeContext))
+            return null;
+
+        var signature = propertyCtx.IsStatic
+            ? MethodSignature.CreateStatic(propertyTypeSig)
+            : MethodSignature.CreateInstance(propertyTypeSig);
+
+        // An indexer's getter takes the index parameters, which are the setter's minus the value handed to
+        // it last.
+        for (var i = 0; i < managedSetter.Parameters.Count - 1; i++)
+            signature.ParameterTypes.Add(managedSetter.Parameters[i].ParameterType);
+
+        var managedGetter = new MethodDefinition("get_" + propertyCtx.Name, managedSetter.Attributes, signature);
+
+        ilTypeDefinition.Methods.Add(managedGetter);
+
+        // An auto-property's getter read its backing field, and il2cpp keeps the field even where it drops
+        // the accessor, so what goes back is the getter the source had rather than a stub. An indexer or a
+        // property with a real body has no such field and returns default instead - the value is never read
+        // at runtime either way, the getter is there so that C# will accept the named argument.
+        var backingField = signature.ParameterTypes.Count == 0
+            ? ilTypeDefinition.Fields.FirstOrDefault(f => f.Name == $"<{propertyCtx.Name}>k__BackingField" && f.IsStatic == propertyCtx.IsStatic)
+            : null;
+
+        if (backingField == null)
+        {
+            managedGetter.ReplaceMethodBodyWithMinimalImplementation();
+            return managedGetter;
+        }
+
+        managedGetter.CilMethodBody = new();
+
+        var instructions = managedGetter.CilMethodBody.Instructions;
+
+        if (!propertyCtx.IsStatic)
+            instructions.Add(CilOpCodes.Ldarg_0);
+
+        instructions.Add(propertyCtx.IsStatic ? CilOpCodes.Ldsfld : CilOpCodes.Ldfld, backingField);
+        instructions.Add(CilOpCodes.Ret);
+
+        return managedGetter;
+    }
+
+    // A Unity PropertyAttribute subclass is two steps from System.Attribute and a game's own attribute base
+    // can be further still, so the whole chain is walked rather than just the immediate base.
+    private static bool InheritsAttribute(TypeAnalysisContext typeContext)
+    {
+        for (var current = typeContext.BaseType; current != null; current = current.BaseType)
+        {
+            if (current is { Namespace: "System", Name: "Attribute" })
+                return true;
+        }
+
+        return false;
+    }
+
     private static void CopyEventsInType(TypeAnalysisContext cppTypeDefinition, TypeDefinition ilTypeDefinition)
     {
         foreach (var eventCtx in cppTypeDefinition.Events)
@@ -480,11 +574,53 @@ public static class AsmResolverAssemblyPopulator
 
             managedEvent.SetSemanticMethods(managedAdder, managedRemover, managedInvoker);
 
+            RenameBackingFieldOf(managedEvent, ilTypeDefinition);
+
             eventCtx.PutExtraData("AsmResolverEvent", managedEvent);
 
             ilTypeDefinition.Events.Add(managedEvent);
         }
     }
+
+    private static void RenameBackingFieldOf(EventDefinition managedEvent, TypeDefinition ilTypeDefinition)
+    {
+        if (!RenameEventBackingFields || managedEvent.Name?.ToString() is not { Length: > 0 } eventName)
+            return;
+
+        foreach (var field in ilTypeDefinition.Fields)
+        {
+            if (field.Name?.ToString() is not { } fieldName || !IsEventBackingFieldName(fieldName, eventName))
+                continue;
+
+            // The suffix a property backing field carries, without the angle brackets that are the one part
+            // of that name C# cannot write.
+            field.Name = UnusedMemberName(ilTypeDefinition, fieldName + "__BackingField");
+            return;
+        }
+    }
+
+    // The two spellings the decompiler takes for an event's storage and hides - the C# one and the VB one.
+    private static bool IsEventBackingFieldName(string fieldName, string eventName)
+        => fieldName == eventName || fieldName == eventName + "Event";
+
+    // A duplicate member name is worse than an ugly one, so the new name is held against everything else
+    // the type declares before it is used.
+    private static string UnusedMemberName(TypeDefinition ilTypeDefinition, string name)
+    {
+        var candidate = name;
+
+        for (var suffix = 2; NameIsDeclaredBy(ilTypeDefinition, candidate); suffix++)
+            candidate = name + "_" + suffix;
+
+        return candidate;
+    }
+
+    private static bool NameIsDeclaredBy(TypeDefinition ilTypeDefinition, string name)
+        => ilTypeDefinition.Fields.Any(f => f.Name == name)
+            || ilTypeDefinition.Methods.Any(m => m.Name == name)
+            || ilTypeDefinition.Properties.Any(p => p.Name == name)
+            || ilTypeDefinition.Events.Any(e => e.Name == name)
+            || ilTypeDefinition.NestedTypes.Any(t => t.Name == name);
 
     public static void AddExplicitInterfaceImplementations(AssemblyAnalysisContext asmContext)
     {

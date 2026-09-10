@@ -996,6 +996,13 @@ public static class IlGenerator
         if (expectedType is ByRefTypeAnalysisContext || expectedType.FullName is "System.Object" or "System.Void")
             return;
 
+        // A context with no AsmResolver type behind it cannot be named in IL at all, and ToTypeSignature
+        // throws rather than returning null. The cast is an improvement, never a requirement - the local
+        // still loads correctly without it - so a type we cannot name is a reason to skip it, not to fail
+        // the whole method.
+        if (expectedType.GetExtraData<TypeDefinition>("AsmResolverType") == null && expectedType is not ReferencedTypeAnalysisContext)
+            return;
+
         instructions.Add(CilOpCodes.Unbox_Any, expectedType.ToTypeSignature().ToTypeDefOrRef());
     }
 
