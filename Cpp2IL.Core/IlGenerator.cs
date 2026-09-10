@@ -53,6 +53,11 @@ public static class IlGenerator
     // the IL is invalid and the JIT refuses the method. CPP2IL_UNWRAP_STRUCTS=0 disables.
     private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
 
+    // The same repair one step out, for a struct that holds its whole value in several overlapping fields
+    // rather than in one. On by default (CPP2IL_UNION_STRUCTS=0 disables); StackCoercion reads the same
+    // switch for its half. See UnionValueField.
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
+
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
 
@@ -650,7 +655,9 @@ public static class IlGenerator
         if (!UnwrapValueStructs || destination is not LocalVariable { Type: { } destinationType } local)
             return;
 
-        if (SingleValueField(destinationType) is not { } field || !locals.TryGetValue(local, out var ilLocal))
+        // No width is asked for: what a store puts back is the whole register, so a union is written
+        // through the member that covers it rather than through one of its halves.
+        if (ArithmeticValueField(destinationType, 0) is not { } field || !locals.TryGetValue(local, out var ilLocal))
             return;
 
         // The value has to be parked while the destination's address goes underneath it: stfld wants the
@@ -707,7 +714,8 @@ public static class IlGenerator
     }
 
     // The primitive an arithmetic instruction leaves on the stack: the operand's own type, or the primitive
-    // inside it once a single-field wrapper has been unwrapped.
+    // inside it once a wrapper has been unwrapped. The same field the operand load will read, so the width
+    // the destination is typed at and the width actually pushed cannot come apart.
     private static TypeAnalysisContext? ArithmeticResultType(Instruction instruction, MethodAnalysisContext context)
     {
         for (var i = 1; i < instruction.Operands.Count; i++)
@@ -715,7 +723,7 @@ public static class IlGenerator
             if (OperandType(instruction.Operands[i]) is not { } operandType)
                 continue;
 
-            if (SingleValueField(operandType) is { } wrapped)
+            if (ArithmeticValueField(operandType, OperationBits(instruction, i, context)) is { } wrapped)
                 return wrapped.FieldType;
 
             if (operandType.ToTypeSignature() is CorLibTypeSignature)
@@ -799,7 +807,8 @@ public static class IlGenerator
             if (field.IsStatic)
                 continue;
 
-            // Two fields and there is no single value to unwrap to - a vector, a struct of structs.
+            // Two fields and there is no single value to unwrap to - a vector, a struct of structs. A union,
+            // where the second field is another name for the first, is UnionValueField's.
             if (only != null)
                 return null;
 
@@ -809,14 +818,172 @@ public static class IlGenerator
         return only?.FieldType.ToTypeSignature() is CorLibTypeSignature ? only : null;
     }
 
+    /// <summary>
+    /// The member of an explicit-layout union struct that is the register itself, at the width the machine
+    /// used it.
+    ///
+    /// <see cref="SingleValueField"/> stops at two fields because there is no single value to unwrap to. A
+    /// union is the case where there is more than one name for the same value: Quantum's <c>EntityRef</c> is
+    /// <c>{ int Index @0; int Version @4; ulong Raw @0 }</c>, so the eight bytes il2cpp keeps in one register
+    /// are <c>Raw</c> read whole and <c>Index</c> read as its low half. Both are real fields of the type, so
+    /// nothing is reinterpreted and no cast is invented - the only question is which member the original
+    /// source named, and the width the opcode ran at answers it.
+    ///
+    /// Picking the narrowest member the operation still fits in is what keeps the two apart, and both ways of
+    /// getting it wrong are silent. Taking the whole register everywhere turns <c>e.Index &lt; f._capacity</c>
+    /// into a comparison that also weighs Version's bits - wrong for every entity that has ever been
+    /// recycled, and it compiles. Taking the low half everywhere turns <c>Raw &gt;&gt; 32</c>, which is how
+    /// Quantum reads Version out, into <c>Index &gt;&gt; 32</c>, which IL masks straight back to
+    /// <c>Index</c>.
+    ///
+    /// A member covering the struct exactly has to exist, every instance field has to be a primitive of known
+    /// width, and the layout has to be explicit - together that is what says the fields really do overlay one
+    /// register rather than sit side by side. 11 of the 1,073 multi-field value types in the recovered
+    /// assemblies match, EntityRef and Unity's Color32 among them; a plain two-field struct such as
+    /// <c>{int A; int B}</c> has no eight-byte member at offset 0 and is left alone. Of the 11, EntityRef is
+    /// the only one this game reaches an arithmetic opcode with - 144 sites across 38 files, which is the
+    /// whole of the CS0019 shapes naming EntityRef against an int.
+    /// </summary>
+    private static FieldAnalysisContext? UnionValueField(TypeAnalysisContext? type, int registerBits)
+    {
+        if (!UnwrapUnionStructs || type is not { IsValueType: true } || type.IsEnumType
+            || type.ToTypeSignature() is CorLibTypeSignature
+            || (type.Attributes & TypeAttributes.LayoutMask) != TypeAttributes.ExplicitLayout)
+            return null;
+
+        // The struct's own size, taken from the fields rather than from a declared one: a field whose width
+        // cannot be stated could be hiding anything, and then nothing can be said about what the register
+        // held either.
+        var extent = 0;
+
+        foreach (var field in type.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (field.Offset < 0 || PrimitiveWidth(field.FieldType) is not { } width)
+                return null;
+
+            extent = Math.Max(extent, field.Offset + width);
+        }
+
+        FieldAnalysisContext? whole = null;
+        FieldAnalysisContext? narrowest = null;
+        var narrowestWidth = int.MaxValue;
+
+        foreach (var field in type.Fields)
+        {
+            // Only an integer at offset 0: a member further in is a piece of the register rather than a view
+            // of it, and a float one is not what an integer opcode was reading.
+            if (field.IsStatic || field.Offset != 0 || !IsIntegerType(field.FieldType))
+                continue;
+
+            var width = PrimitiveWidth(field.FieldType)!.Value;
+
+            // Nothing on the evaluation stack is narrower than int32, so a member below that width is not a
+            // register the arithmetic could have run on: byte 0 of a union is one byte of the value, not a
+            // narrower way of holding all of it. Without this floor `<< 4` would read a shift of the whole
+            // register off UdpByteConverter's Byte0 and throw seven eighths of it away.
+            if (width < 4)
+                continue;
+
+            if (width == extent)
+                whole ??= field;
+
+            if (width * 8 >= registerBits && width < narrowestWidth)
+            {
+                narrowest = field;
+                narrowestWidth = width;
+            }
+        }
+
+        // No member is the whole register, so this is not a union and the fields are simply adjacent.
+        if (whole == null)
+            return null;
+
+        // Nothing said how wide the operation was, and then the honest answer is the register itself.
+        return registerBits > 0 ? narrowest ?? whole : whole;
+    }
+
+    // The field an arithmetic opcode should read a struct through: the one value a wrapper holds, or the
+    // member of a union that is the register at this width. The single-field case is tried first, so a type
+    // that already unwrapped keeps unwrapping through exactly the field it always did.
+    private static FieldAnalysisContext? ArithmeticValueField(TypeAnalysisContext? type, int registerBits)
+        => SingleValueField(type) ?? UnionValueField(type, registerBits);
+
+    // The width in bytes of a primitive, or null for anything whose layout its element type does not settle -
+    // native int included, since that is the one width that is not written down.
+    private static int? PrimitiveWidth(TypeAnalysisContext type)
+    {
+        if (type.ToTypeSignature() is not CorLibTypeSignature { ElementType: var element })
+            return null;
+
+        return element switch
+        {
+            AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I1
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U1 => 1,
+            AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Char
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I2
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U2 => 2,
+            AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I4
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U4
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.R4 => 4,
+            AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I8
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.R8 => 8,
+            _ => null,
+        };
+    }
+
+    private static bool IsIntegerType(TypeAnalysisContext type)
+        => type.ToTypeSignature() is CorLibTypeSignature
+        {
+            ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I1
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U1
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I2
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U2
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I4
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U4
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I8
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8
+        };
+
+    /// <summary>
+    /// How wide the machine ran this instruction, in bits, or 0 where nothing about the site says - which
+    /// <see cref="UnionValueField"/> reads as the whole register. Only a union struct ever consults this;
+    /// every other operand has one width and so has no choice to make.
+    /// </summary>
+    private static int OperationBits(Instruction instruction, int operandIndex, MethodAnalysisContext context)
+    {
+        if (instruction.Operands.Count < 3)
+            return 0;
+
+        // A shift's second operand is the count rather than a value, so it says nothing about the type of the
+        // first - but it is a lower bound on its width, and a tight one. IL masks a shift count to the width
+        // of what it shifts, so a count of 32 taken off a 32-bit member would hand that member back
+        // unchanged; only a wider member can have been what the machine shifted.
+        if (instruction.OpCode is OpCode.ShiftLeft or OpCode.ShiftRight)
+            return instruction.Operands[2] is Immediate { Value: >= 0 and < 64 } count ? (int)count.Value + 1 : 0;
+
+        // Everywhere else the opposite operand is what the register was compared or combined with, and a
+        // register only meets a value of its own width: `EntityRef < frame._capacity` is a 32-bit compare
+        // against an int32 field, which is the source having written `entityRef.Index`.
+        return ComparisonOperandType(instruction, operandIndex == 1 ? 2 : 1, context) is { } other
+               && PrimitiveWidth(other) is { } width
+            ? width * 8
+            : 0;
+    }
+
     // Reads the wrapper's value out so the arithmetic opcode gets the primitive it needs. The operand is
     // already on the stack, so this only ever appends the read.
-    private static void UnwrapValueStruct(IOperand operand, TypeAnalysisContext? loadedType, CilInstructionCollection instructions)
+    private static void UnwrapValueStruct(IOperand operand, TypeAnalysisContext? loadedType, int registerBits,
+        CilInstructionCollection instructions)
     {
         if (!UnwrapValueStructs || operand is Immediate or FloatLiteral or DoubleLiteral)
             return;
 
-        if (SingleValueField(loadedType) is { } field)
+        if (ArithmeticValueField(loadedType, registerBits) is { } field)
             instructions.Add(CilOpCodes.Ldfld, field.ToFieldDescriptor());
     }
     /// <summary>
@@ -1354,7 +1521,8 @@ public static class IlGenerator
                 if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
                 {
                     LoadOperand(instruction.Operands[1], method, locals, writeLine, leftType);
-                    UnwrapValueStruct(instruction.Operands[1], OperandType(instruction.Operands[1]), instructions);
+                    UnwrapValueStruct(instruction.Operands[1], OperandType(instruction.Operands[1]),
+                        OperationBits(instruction, 1, context), instructions);
                     if (floatConversion is { } conv1)
                         instructions.Add(conv1);
                     if (wideningConversion is { } widen1)
@@ -1364,7 +1532,8 @@ public static class IlGenerator
                 if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
                 {
                     LoadOperand(instruction.Operands[2], method, locals, writeLine, rightType);
-                    UnwrapValueStruct(instruction.Operands[2], OperandType(instruction.Operands[2]), instructions);
+                    UnwrapValueStruct(instruction.Operands[2], OperandType(instruction.Operands[2]),
+                        OperationBits(instruction, 2, context), instructions);
                     if (floatConversion is { } conv2)
                         instructions.Add(conv2);
                     if (wideningConversion is { } widen2)

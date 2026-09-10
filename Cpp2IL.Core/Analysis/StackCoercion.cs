@@ -44,6 +44,10 @@ public static class StackCoercion
     // Unboxes the operands of an arithmetic opcode fed by two untyped locals (CPP2IL_OBJ_ARITH=0 disables).
     private static readonly bool UntypedArithmetic = Environment.GetEnvironmentVariable("CPP2IL_OBJ_ARITH") != "0";
 
+    // Reads a union struct through whichever member is the register at the width the opcode wants. Shares its
+    // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=0 disables both).
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
+
     // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
     // body that keeps finding work is looping over something unexpected rather than converging.
     private const int UntypedArithmeticRounds = 4;
@@ -651,8 +655,9 @@ public static class StackCoercion
             if (left.Kind != Kind.Struct)
                 return null;
 
-            var leftValue = SingleValueFieldOf(left.Type);
-            var rightValue = SingleValueFieldOf(right.Type);
+            // Two registers meeting each other are compared whole, so neither side asks for a width.
+            var leftValue = ValueFieldTypeOf(left.Type, 0);
+            var rightValue = ValueFieldTypeOf(right.Type, 0);
 
             return leftValue != null && rightValue != null && leftValue.FullName == rightValue.FullName
                 ? leftValue
@@ -663,8 +668,11 @@ public static class StackCoercion
         // primitive it wraps, so the primitive is what both sides have to be.
         if (left.Kind == Kind.Struct || right.Kind == Kind.Struct)
         {
-            var wrapped = SingleValueFieldOf(left.Kind == Kind.Struct ? left.Type : right.Type);
             var other = left.Kind == Kind.Struct ? right : left;
+
+            // Where the struct is a union rather than a wrapper, the other side's width is what says which of
+            // its overlapping members the register was being read as - see IlGenerator.UnionValueField.
+            var wrapped = ValueFieldTypeOf(left.Kind == Kind.Struct ? left.Type : right.Type, RegisterBits(other.Kind));
 
             return wrapped != null && IsNumeric(other.Kind) ? wrapped : null;
         }
@@ -705,10 +713,11 @@ public static class StackCoercion
 
     private static bool IsNumeric(Kind kind) => kind is Kind.Int32 or Kind.Int64 or Kind.Native or Kind.Float;
 
-    // Reads a wrapper struct's one value out where an opcode wants a number and was handed the wrapper.
+    // Reads a struct's value out where an opcode wants a number and was handed the struct. No width is asked
+    // for, so a union gives up the whole register rather than one of its halves.
     private static void Unwrap(CilMethodBody body, List<Value> stack, List<Edit> edits, int slot)
     {
-        if (stack[slot].Kind == Kind.Struct && SingleValueFieldOf(stack[slot].Type) is { } wrapped)
+        if (stack[slot].Kind == Kind.Struct && ValueFieldTypeOf(stack[slot].Type, 0) is { } wrapped)
             Coerce(body, stack, edits, slot, wrapped);
     }
 
@@ -773,7 +782,7 @@ public static class StackCoercion
         // in and out of it through that one field rather than being reinterpreted.
         if (value.Kind == Kind.Struct)
         {
-            if (WrapperField(value.Type) is not { } read)
+            if (ValueFieldOf(value.Type, RegisterBits(wanted)) is not { } read)
                 return null;
 
             var unwrapped = new Value(read.Signature!.FieldType, KindOf(read.Signature.FieldType), value.ProducedBy);
@@ -789,7 +798,8 @@ public static class StackCoercion
 
         if (wanted == Kind.Struct)
         {
-            if (WrapperField(expected) is not { } written)
+            // A store puts a whole register back, so a union is written through the member covering it.
+            if (ValueFieldOf(expected, 0) is not { } written)
                 return null;
 
             var target = written.Signature!.FieldType;
@@ -964,7 +974,109 @@ public static class StackCoercion
         });
     }
 
-    private static TypeSignature? SingleValueFieldOf(TypeSignature? type) => WrapperField(type)?.Signature?.FieldType;
+    private static readonly ConcurrentDictionary<string, List<FieldDefinition>?> UnionFields = new();
+
+    /// <summary>
+    /// The field a value goes into or out of a struct through: the one value a wrapper holds, or the member of
+    /// a union that is the register at the width asked for. The wrapper case is tried first, so a type that
+    /// already converted keeps converting through exactly the field it always did.
+    /// </summary>
+    private static FieldDefinition? ValueFieldOf(TypeSignature? type, int registerBits)
+        => WrapperField(type) ?? UnionField(type, registerBits);
+
+    private static TypeSignature? ValueFieldTypeOf(TypeSignature? type, int registerBits)
+        => ValueFieldOf(type, registerBits)?.Signature?.FieldType;
+
+    /// <summary>
+    /// The emitter's <c>IlGenerator.UnionValueField</c> seen from this side: an explicit-layout struct whose
+    /// fields overlap at offset 0 is one register under several names, and the width the opcode runs at is
+    /// what says which name the original source used. Quantum's <c>EntityRef</c> is
+    /// <c>{ int Index @0; int Version @4; ulong Raw @0 }</c> - <c>Index</c> where a 32-bit value is wanted,
+    /// <c>Raw</c> where the whole thing is.
+    /// </summary>
+    private static FieldDefinition? UnionField(TypeSignature? type, int registerBits)
+    {
+        if (!UnwrapUnionStructs || type is not { ElementType: ElementType.ValueType } || KindOf(type) != Kind.Struct)
+            return null;
+
+        if (UnionFields.GetOrAdd(type.FullName, _ => UnionMembers(type)) is not { } members)
+            return null;
+
+        // The members are narrowest first, so the first one wide enough is the narrowest that fits. Where
+        // nothing said how wide the opcode ran, the honest answer is the whole register.
+        if (registerBits > 0)
+            foreach (var member in members)
+                if (FieldWidth(member) * 8 >= registerBits)
+                    return member;
+
+        return members[^1];
+    }
+
+    /// <summary>
+    /// The members of a union that are the whole register or a low half of it, narrowest first. Null unless
+    /// one of them covers the struct exactly and every field's width is known - together that is what says
+    /// the fields really do overlay one register rather than sit side by side.
+    /// </summary>
+    private static List<FieldDefinition>? UnionMembers(TypeSignature type)
+    {
+        if (Resolve(type) is not { IsExplicitLayout: true } definition)
+            return null;
+
+        var extent = 0;
+        var members = new List<FieldDefinition>();
+
+        foreach (var field in definition.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (field.Signature?.FieldType is not CorLibTypeSignature primitive
+                || PrimitiveWidth(primitive) is not { } width
+                || field.FieldOffset is not { } offset)
+                return null;
+
+            extent = Math.Max(extent, offset + width);
+
+            // A member further in is a piece of the register rather than a view of it, a float one is not what
+            // an integer opcode was reading, and one below int32 is not a width the evaluation stack has - byte
+            // 0 of a union is one byte of the value rather than a narrower way of holding all of it.
+            if (offset == 0 && IsInteger(primitive) && width >= 4)
+                members.Add(field);
+        }
+
+        members.Sort((left, right) => FieldWidth(left).CompareTo(FieldWidth(right)));
+
+        return members.Count > 0 && FieldWidth(members[^1]) == extent ? members : null;
+    }
+
+    private static int FieldWidth(FieldDefinition field)
+        => field.Signature?.FieldType is CorLibTypeSignature primitive && PrimitiveWidth(primitive) is { } width
+            ? width
+            : 0;
+
+    // Null for native int, whose width is the one that is not written down, and for anything that is not a
+    // primitive at all.
+    private static int? PrimitiveWidth(CorLibTypeSignature type) => type.ElementType switch
+    {
+        ElementType.Boolean or ElementType.I1 or ElementType.U1 => 1,
+        ElementType.Char or ElementType.I2 or ElementType.U2 => 2,
+        ElementType.I4 or ElementType.U4 or ElementType.R4 => 4,
+        ElementType.I8 or ElementType.U8 or ElementType.R8 => 8,
+        _ => null,
+    };
+
+    private static bool IsInteger(CorLibTypeSignature type) => type.ElementType is
+        ElementType.I1 or ElementType.U1 or ElementType.I2 or ElementType.U2
+        or ElementType.I4 or ElementType.U4 or ElementType.I8 or ElementType.U8;
+
+    // What a kind occupies on the evaluation stack, which is the width the opcode ran at. Zero where the kind
+    // says nothing, which UnionField reads as the whole register.
+    private static int RegisterBits(Kind kind) => kind switch
+    {
+        Kind.Int32 => 32,
+        Kind.Int64 or Kind.Native => 64,
+        _ => 0,
+    };
 
     // A type from an assembly that is not loaded, or a reference nothing can be found for, resolves to
     // nothing at all - and throws in some shapes rather than returning null.
