@@ -180,6 +180,34 @@ namespace ICSharpCode.Decompiler.Ast {
 			}
 		}
 
+		// Cpp2IL: a nested closure type (<>c__DisplayClassN_M, <>c) is hidden below because DelegateConstruction
+		// is expected to fold it away - the closure local becomes ordinary locals and the lambda bodies move back
+		// into the parent method, leaving nothing to declare. On Cpp2IL bodies that fold almost never fires: the
+		// block transform bails unless the closure local is used for nothing but field access, and a recovered
+		// body carries dead locals and unrecovered stores that break the shape. Measured on the emitted DLLs, 432
+		// of the 483 display classes are still written by name in the output and not one of the 622 closure types
+		// is declared, so every use resolves against nothing - CS0426, 2,053 errors over 867 methods. Emitting the
+		// declaration makes both sides agree without touching metadata: IdentifierEscaper already maps '<' and '>'
+		// to '_' at every use and does the same in the declaration, so the printed names match.
+		//
+		// The members stay hidden, and that is the point. The recompile denominator is the number of method
+		// declarations in the decompiled C#, so emitting the 885 lambdas, 622 constructors and 139 static
+		// constructors these types carry would add them to it and make every percentage incomparable with the
+		// project's earlier numbers - the same inflation (16,676 -> 18,390) that made renaming the types harmful.
+		// The lambdas are folded into their parent method anyway, so declaring them would also duplicate them.
+		// Fields stay visible: they are what the surviving uses actually reference.
+		//
+		// Safe because closure types are structurally trivial - measured over both Assembly-CSharp DLLs: none
+		// implements an interface (so hiding the members cannot produce CS0535), none has properties, events or
+		// nested types, all derive from Object, all 622 constructors are parameterless so the implicit default
+		// constructor stands in for the hidden one, all are nested public, and no escaped name collides with a
+		// sibling nested type or with a member of the parent.
+		//
+		// State machines (<X>d__N) are deliberately left hidden: they implement IEnumerator/IAsyncStateMachine and
+		// take a state argument in their constructor, so declaring them with hidden members would trade CS0426 for
+		// CS0535 and CS1729 instead.
+		static readonly bool ClosureDeclarations = Environment.GetEnvironmentVariable("CPP2IL_CLOSURE_DECL") != "0";
+
 		public static bool MemberIsHidden(IMemberRef member, DecompilerSettings settings)
 		{
 			MethodDef method = member as MethodDef;
@@ -188,6 +216,13 @@ namespace ICSharpCode.Decompiler.Ast {
 					return true;
 				if (settings.ForceShowAllMembers)
 					return false;
+				// Cpp2IL: the closure type itself is now declared (see ClosureDeclarations) but its members are not,
+				// so nothing new lands in the decompiled output. Constructors and generated-name lambdas only - the
+				// one closure member that is neither is a lambda whose name IL2CPP stripped, and the decompiler does
+				// print a method group reference to it, so hiding it too would only trade CS0426 for CS1061.
+				if (ClosureDeclarations && settings.AnonymousMethods && method.DeclaringType != null &&
+					IsClosureType(method.DeclaringType) && (method.IsConstructor || method.HasGeneratedName()))
+					return true;
 				if (settings.AnonymousMethods) {
 					if (method.Name.StartsWith("_Lambda$__") && method.IsCompilerGenerated())
 						return true;
@@ -202,7 +237,7 @@ namespace ICSharpCode.Decompiler.Ast {
 				if (settings.ForceShowAllMembers)
 					return false;
 				if (type.DeclaringType != null) {
-					if (settings.AnonymousMethods && IsClosureType(type))
+					if (settings.AnonymousMethods && IsClosureType(type) && !ClosureDeclarations)
 						return true;
 					if (settings.YieldReturn && YieldReturnDecompiler.IsCompilerGeneratorEnumerator(type))
 						return true;

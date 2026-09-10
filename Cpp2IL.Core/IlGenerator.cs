@@ -45,6 +45,17 @@ public static class IlGenerator
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
 
+    // Gives a read out of an il2cpp runtime structure the width its use site asks for, instead of always a
+    // native int. On by default (CPP2IL_META_ZERO=0 disables).
+    private static readonly bool MetadataZeroWidth = Environment.GetEnvironmentVariable("CPP2IL_META_ZERO") != "0";
+
+    // In a comparison, gives the width to the side that could not be recovered, and only to that side.
+    // On by default (CPP2IL_CMP_ZERO=0 disables).
+    private static readonly bool ComparisonZeroWidth = Environment.GetEnvironmentVariable("CPP2IL_CMP_ZERO") != "0";
+
+    // Does an ordering comparison of native ints on int64. On by default (CPP2IL_NINT_CMP=0 disables).
+    private static readonly bool NativeIntOrdering = Environment.GetEnvironmentVariable("CPP2IL_NINT_CMP") != "0";
+
     // Reads a backing field owned by another type through its property. On by default (CPP2IL_BACKING_PROP=0).
     private static readonly bool RouteBackingFields = Environment.GetEnvironmentVariable("CPP2IL_BACKING_PROP") != "0";
 
@@ -123,6 +134,34 @@ public static class IlGenerator
         var kind = operand.GetType().Name;
         if (UnhandledZeroOperands.TryAdd(kind, 0))
             Console.Error.WriteLine($"[zerodiag] operand comparat cu 0, netratat: {kind}");
+    }
+
+    // Diagnostic-only (env CPP2IL_METADIAG=1): counts the reads out of il2cpp runtime structures that end
+    // as a fabricated zero, by structure and by offset. Two hardcoded tables in this repo disagree about
+    // where Il2CppClass keeps its bitfields - Il2CppClassUsefulOffsets says flags1 is at 0x132, while
+    // MetadataInitGuardRemover looks for initialized_and_no_error at 0x135 and carries a TODO saying it is
+    // probably wrong for some versions - and one guess or the other is why the class-init guard survives
+    // into the output as `num = (IntPtr)0 & 1; if (num == 0) throw null;`. A run with this on says which
+    // offsets this binary actually reads, so the next fix can be measured rather than guessed at.
+    // Zero cost when off.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long[]> MetadataReads = new();
+    private static int _metaDiagHooked;
+
+    private static void ReportMetadataRead(TypeAnalysisContext baseType, long addend)
+    {
+        if (Environment.GetEnvironmentVariable("CPP2IL_METADIAG") != "1")
+            return;
+
+        if (System.Threading.Interlocked.Exchange(ref _metaDiagHooked, 1) == 0)
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                Console.WriteLine("==== METADATA-READ DIAG (structura+offset: cate ori) ====");
+                foreach (var entry in MetadataReads.OrderByDescending(e => e.Value[0]))
+                    Console.WriteLine($"  {entry.Key,-52} {entry.Value[0],8}");
+            };
+
+        var key = $"{baseType.GetType().Name}+0x{addend:X}";
+        System.Threading.Interlocked.Increment(ref MetadataReads.GetOrAdd(key, _ => new long[1])[0]);
     }
 
     private static bool TryEmitZeroAgainstNonInt(Instruction instruction, int operandIndex, CilInstructionCollection instructions)
@@ -529,6 +568,10 @@ public static class IlGenerator
             StringLiteral => context.AppContext.SystemTypes.SystemStringType,
             FloatLiteral => context.AppContext.SystemTypes.SystemSingleType,
             DoubleLiteral => context.AppContext.SystemTypes.SystemDoubleType,
+            // Not a declared type but the one the loader will actually push, which is what the other side
+            // has to match: an immediate in int range becomes ldc.i4, anything wider ldc.i8.
+            Immediate { Value: >= int.MinValue and <= int.MaxValue } => context.AppContext.SystemTypes.SystemInt32Type,
+            Immediate => context.AppContext.SystemTypes.SystemInt64Type,
             _ => null,
         };
 
@@ -664,6 +707,123 @@ public static class IlGenerator
         if (SingleValueField(loadedType) is { } field)
             instructions.Add(CilOpCodes.Ldfld, field.ToFieldDescriptor());
     }
+    /// <summary>
+    /// True for an operand <see cref="LoadOperand"/> cannot turn into a value at all and stands in for with
+    /// a fabricated zero - a read out of an il2cpp runtime structure, or an address computation that never
+    /// resolved. Whether the stand-in is marked or silent makes no difference here; what matters is that it
+    /// describes nothing about the program, so the width it is pushed at is free to be chosen.
+    /// </summary>
+    private static bool IsUnrecoverableOperand(IOperand operand) => operand switch
+    {
+        // A whole-register read loads the register own local, which really is a value - so it is not a
+        // placeholder, and its type must not be second-guessed.
+        MemoryOperand { Index: null, Addend: 0, Scale: 0, Base: LocalVariable } => false,
+        MemoryOperand => true,
+        RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
+            or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
+            or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// The width to load one side of a comparison at, but only where that side is a fabricated zero.
+    ///
+    /// This is the narrow half of what <see cref="ComparisonTypes"/> did, and the difference is the whole
+    /// point. Typing every operand from its opposite cost 251 strict methods because it also spoke about
+    /// real values: an untyped local picked up an unbox.any int32 from <see cref="CastUntypedLocal"/>, and
+    /// an AddressOf operand met the value-type branch at the top of <see cref="LoadOperand"/> and was
+    /// rewritten from the address to the value, turning a pointer comparison into a value comparison.
+    /// Nothing is claimed about a real operand here - the type is handed only to a value already admitted
+    /// not to exist, where the width is free and native int is simply the least likely answer.
+    ///
+    /// Where both sides are fabricated the comparison relates nothing to nothing, and int32 is picked so
+    /// the meaningless test at least compiles: IntPtr against IntPtr is 200 of the counted offending lines,
+    /// and IntPtr carries no ordering operators in the corlib these assemblies are rebuilt against.
+    /// </summary>
+    private static TypeAnalysisContext? PlaceholderComparisonType(Instruction instruction, int index, MethodAnalysisContext context)
+    {
+        if (!ComparisonZeroWidth || !IsUnrecoverableOperand(instruction.Operands[index]))
+            return null;
+
+        var otherIndex = index == 1 ? 2 : 1;
+        var other = instruction.Operands[otherIndex];
+
+        // Against a literal 0, TryEmitZeroAgainstNonInt has already paired the two sides up: it pushes that
+        // literal as a native int precisely because this side is one. Retyping this side would unpair them
+        // and turn a comparison that compiles into one that does not.
+        if (instruction.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual && other is Immediate { UnsignedValue: 0 })
+            return null;
+
+        if (IsUnrecoverableOperand(other))
+            return context.AppContext.SystemTypes.SystemInt32Type;
+
+        return ComparisonOperandType(instruction, otherIndex, context);
+    }
+
+    /// <summary>
+    /// True where a comparison is an ordering between native ints, which C# cannot spell: IntPtr carries no
+    /// ordering operators in the corlib these assemblies are rebuilt against, so clt on two native ints
+    /// prints as IntPtr against IntPtr and does not compile - the CS0019 ordering family, 556 methods.
+    ///
+    /// What follows is a widening, not a retyping: the emitted comparison is signed and conv.i8
+    /// sign-extends, so the int64 comparison answers the same for every input on a 32- or a 64-bit target.
+    /// Nothing is asserted about the operands beyond what they already are.
+    ///
+    /// Both sides have to be integers for the widening to mean anything, and at least one an actual native
+    /// int, or there is nothing to repair and two instructions would be spent saying so.
+    /// </summary>
+    private static bool IsNativeIntOrdering(Instruction instruction, TypeAnalysisContext? leftType, TypeAnalysisContext? rightType)
+    {
+        if (!NativeIntOrdering)
+            return false;
+
+        if (instruction.OpCode is not (OpCode.CheckGreater or OpCode.CheckLess
+            or OpCode.CheckGreaterOrEqual or OpCode.CheckLessOrEqual))
+            return false;
+
+        var left = EmittedIntegerKind(instruction.Operands[1], leftType);
+        var right = EmittedIntegerKind(instruction.Operands[2], rightType);
+
+        if (left == IntegerKind.NotInteger || right == IntegerKind.NotInteger)
+            return false;
+
+        return left == IntegerKind.Native || right == IntegerKind.Native;
+    }
+
+    private enum IntegerKind { NotInteger, Sized, Native }
+
+    /// <summary>
+    /// What <see cref="LoadOperand"/> will leave on the stack for this operand, as far as widening cares.
+    /// Deliberately conservative: anything not provably an integer is left alone, because a conv.i8 over a
+    /// reference or a managed pointer would be a second error rather than a fix for the first.
+    /// </summary>
+    private static IntegerKind EmittedIntegerKind(IOperand operand, TypeAnalysisContext? expectedType)
+    {
+        // A fabricated zero is whatever PushPlaceholderZero was told to make it, and a native int when it
+        // was told nothing.
+        if (IsUnrecoverableOperand(operand))
+            return expectedType == null ? IntegerKind.Native : IntegerKindOf(expectedType);
+
+        return operand switch
+        {
+            Immediate => IntegerKind.Sized,
+            LocalVariable { Type: { } type } => IntegerKindOf(type),
+            FieldReference field => IntegerKindOf(field.ResultType),
+            _ => IntegerKind.NotInteger,
+        };
+    }
+
+    private static IntegerKind IntegerKindOf(TypeAnalysisContext type) => type.FullName switch
+    {
+        // il2cpp metadata resolves IntPtr as an ordinary struct rather than the native int primitive, so
+        // the name is the only thing that identifies it - the same reason TryEmitZeroAgainstNonInt has to
+        // match on it by name.
+        "System.IntPtr" or "System.UIntPtr" => IntegerKind.Native,
+        "System.SByte" or "System.Byte" or "System.Int16" or "System.UInt16" or "System.Int32"
+            or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Char" => IntegerKind.Sized,
+        _ => IntegerKind.NotInteger,
+    };
+
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
     private static string Diagnostic(string message) 
         => message.Length <= 250 ? message : message[..250] + "…";
@@ -1030,8 +1190,25 @@ public static class IlGenerator
                     ? DestinationType(instruction.Operands[0])
                     : ComparisonTypes
                         ? ComparisonOperandType(instruction, 2, context) ?? context.AppContext.SystemTypes.SystemInt32Type
-                        : null;
+                        // Only the side that could not be recovered is spoken for; see
+                        // PlaceholderComparisonType for why the wider version of this was harmful.
+                        : PlaceholderComparisonType(instruction, 1, context);
                 var operandType = leftType;
+
+                var rightType = instruction.OpCode switch
+                {
+                    // A shift's second operand is the count, always an int32, never the result type.
+                    OpCode.ShiftLeft or OpCode.ShiftRight => null,
+                    _ when isComparison => ComparisonTypes
+                        ? ComparisonOperandType(instruction, 1, context) ?? leftType
+                        : PlaceholderComparisonType(instruction, 2, context),
+                    _ => operandType,
+                };
+
+                // Hoisted above the loads because the widening has to know what both sides will be before
+                // either of them is emitted. It never collides with TryEmitZeroAgainstNonInt below, which
+                // emits one side by itself: that only ever fires on == and !=, and this only on orderings.
+                var wideningConversion = IsNativeIntOrdering(instruction, leftType, rightType) ? CilOpCodes.Conv_I8 : (CilOpCode?)null;
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
                 {
@@ -1039,22 +1216,18 @@ public static class IlGenerator
                     UnwrapValueStruct(instruction.Operands[1], OperandType(instruction.Operands[1]), instructions);
                     if (floatConversion is { } conv1)
                         instructions.Add(conv1);
+                    if (wideningConversion is { } widen1)
+                        instructions.Add(widen1);
                 }
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
                 {
-                    var rightType = instruction.OpCode switch
-                    {
-                        // A shift's second operand is the count, always an int32, never the result type.
-                        OpCode.ShiftLeft or OpCode.ShiftRight => null,
-                        _ when isComparison => ComparisonTypes ? ComparisonOperandType(instruction, 1, context) ?? leftType : null,
-                        _ => operandType,
-                    };
-
                     LoadOperand(instruction.Operands[2], method, locals, writeLine, rightType);
                     UnwrapValueStruct(instruction.Operands[2], OperandType(instruction.Operands[2]), instructions);
                     if (floatConversion is { } conv2)
                         instructions.Add(conv2);
+                    if (wideningConversion is { } widen2)
+                        instructions.Add(widen2);
                 }
 
                 switch (instruction.OpCode)
@@ -1570,8 +1743,23 @@ public static class IlGenerator
                 // static field storage) have no C# counterpart. Later passes consume the resolved
                 // *type* of the operand rather than the pointer that is loaded here, so nothing is
                 // actually lost and there is no issue to report.
+                //
+                // The stand-in used to be a native int unconditionally, and that is a claim the metadata
+                // layout contradicts: what these reads fetch is `flags` bytes and `type` enums - see the
+                // byte-wide flags1/flags2 in Il2CppClassUsefulOffsets - never a pointer. The value cannot
+                // be recovered either way, but its width can be right, and where the use site says int the
+                // arithmetic around it stays writable: `num = (IntPtr)0 & 16` is CS0019 where `num = 0 & 16`
+                // is not, and the bit-test shapes alone are 613 of the counted offending lines.
                 if (memory.Base is LocalVariable { Type: { } baseType } && IsRuntimeMetadata(baseType))
                 {
+                    ReportMetadataRead(baseType, memory.Addend);
+
+                    if (MetadataZeroWidth)
+                    {
+                        PushPlaceholderZero(expectedType, method, instructions);
+                        break;
+                    }
+
                     instructions.Add(CilOpCodes.Ldc_I4_0);
                     instructions.Add(CilOpCodes.Conv_I);
                     break;
