@@ -37,6 +37,12 @@ internal static class MarkerDiag
     // base that is not a local at all. Only the first is type propagation, so split it before working on it.
     private static readonly ConcurrentDictionary<string, long> A4Kinds = new();
 
+    // Of the A4 markers whose base IS an untyped local, what kind of value does the chain of unresolved
+    // reads behind it actually start from. Tagged by LocalVariables.ReportUntypedBaseChainRoots once the
+    // typing fixpoint has settled, and read here so the counts are per SURVIVING marker rather than per
+    // memory operand at typing time - half of those operands never reach the output.
+    private static readonly ConcurrentDictionary<string, long> A4Roots = new();
+
     // per-method attribution: methodKey -> (bucket -> count). used for "methods that lose all their
     // Unmanaged markers if this bucket is fixed" and dumped to JSON for the BodyScan all-category join.
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, long>> PerMethod = new();
@@ -95,6 +101,10 @@ internal static class MarkerDiag
 
         Console.WriteLine("  -- A4_untyped_base, dupa felul bazei --");
         foreach (var kv in A4Kinds.OrderByDescending(k => k.Value))
+            Console.WriteLine($"     {kv.Value,8}  {kv.Key}");
+
+        Console.WriteLine("  -- A4_untyped_base, dupa RADACINA lantului de citiri nerezolvate --");
+        foreach (var kv in A4Roots.OrderByDescending(k => k.Value).Take(25))
             Console.WriteLine($"     {kv.Value,8}  {kv.Key}");
 
         Console.WriteLine("  -- per bucket: [markers] and [methods that become Unmanaged-clean if only this bucket fixed] --");
@@ -161,6 +171,12 @@ internal static class MarkerDiag
                 memory.Base is null ? "(null)"
                     : memory.Base is LocalVariable ? "LocalVariable fara tip"
                     : memory.Base.GetType().Name,
+                1, (_, v) => v + 1);
+
+            A4Roots.AddOrUpdate(
+                memory.Base is LocalVariable untypedLocal
+                    ? LocalVariables.ChainRootFor(untypedLocal) ?? "(neclasificat - localul a disparut intre timp)"
+                    : "(baza nu e un local)",
                 1, (_, v) => v + 1);
 
             Bump("A4_untyped_base", mk);

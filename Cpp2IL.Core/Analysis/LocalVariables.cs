@@ -341,6 +341,14 @@ public static class LocalVariables
             UnifyContradictoryCopies(method);
 
         ReportUntypedLocalDefinitions(method, addressed);
+
+        // Runs for CPP2IL_MARKERDIAG too, not just CPP2IL_TYPEDIAG: the tag it leaves on each base local
+        // is what lets the per-marker report attribute a marker that SURVIVES to the output back to the
+        // root of its chain. Counting here alone overstates - roughly half of these loads are deleted
+        // later by dead-code elimination and the guard removers, and nothing says the two halves share a
+        // distribution.
+        if (TypeDiag || MarkerDiag.Enabled)
+            ReportUntypedBaseChainRoots(method);
     }
 
 
@@ -629,6 +637,14 @@ public static class LocalVariables
                 Console.WriteLine("==== dintre ele, DOAR cele dereferentiate (baza A4) ====");
                 foreach (var kv in UntypedBaseDefinedBy.OrderByDescending(k => k.Value).Take(20))
                     Console.WriteLine($"   {kv.Value,9}  {kv.Key}");
+
+                Console.WriteLine($"==== RADACINA lantului fiecarei baze A4 ({_chainBases} baze) ====");
+                foreach (var kv in ChainRoots.OrderByDescending(k => k.Value).Take(25))
+                    Console.WriteLine($"   {kv.Value,9}  {kv.Key}");
+
+                Console.WriteLine("==== cati pasi pana la radacina ====");
+                foreach (var kv in ChainDepths.OrderBy(k => k.Key))
+                    Console.WriteLine($"   {kv.Value,9}  la {kv.Key} pasi");
             };
 
         foreach (var instruction in method.ControlFlowGraph!.Instructions)
@@ -649,6 +665,269 @@ public static class LocalVariables
                 UntypedBaseDefinedBy.AddOrUpdate(key, 1, (_, v) => v + 1);
         }
     }
+
+    // Third table of the same diagnostic. A chain of unresolved reads is not a chain of causes: the
+    // fixpoint re-runs the field resolver until nothing new resolves, so had the FIRST load of
+    // "x = [something]; y = [x + off]" resolved, every load after it would have followed. The table above
+    // therefore names a link, not a cause. This one walks each untyped base back along its definitions to
+    // the value the chain actually starts from and tallies what kind of thing that is. A dominant entry
+    // names the rule that is missing; a flat spread says these bases are genuinely untypeable and the
+    // effort belongs in another bucket.
+    // Counted once per memory operand rather than once per local, so the totals are comparable with the
+    // A4 marker count instead of with the number of locals.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> ChainRoots = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> ChainDepths = new();
+    private static long _chainBases;
+
+    internal static readonly bool TypeDiag = Environment.GetEnvironmentVariable("CPP2IL_TYPEDIAG") == "1";
+
+    // Every local on a chain is tagged, not just the base the load named: the passes that run after this
+    // one coalesce copy-related locals, and a coalesced group is exactly a chain, so whichever member of
+    // the group ends up carrying the load still answers for the same root. A weak table keeps this out of
+    // LocalVariable itself and lets the entries die with the method.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LocalVariable, string> ChainRootOf = new();
+
+    internal static string? ChainRootFor(LocalVariable local) =>
+        ChainRootOf.TryGetValue(local, out var root) ? root : null;
+
+    private static void ReportUntypedBaseChainRoots(MethodAnalysisContext method)
+    {
+        // The fixpoint runs in SSA form, so a local has one definition. A second write means the walk
+        // cannot tell which value reaches the load, and that ambiguity is itself a root worth naming.
+        var definitions = new Dictionary<LocalVariable, Instruction>();
+        var multiplyDefined = new HashSet<LocalVariable>();
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.Destination is not LocalVariable destination)
+                continue;
+
+            if (definitions.ContainsKey(destination))
+                multiplyDefined.Add(destination);
+            else
+                definitions[destination] = instruction;
+        }
+
+        foreach (var instruction in method.ControlFlowGraph.Instructions)
+        foreach (var operand in instruction.Operands)
+        {
+            // The exact shape MarkerDiag buckets as A4: a plain [base + offset] whose base is a local the
+            // inference never typed. Indexed loads are a different bucket and are left out.
+            if (operand is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable { Type: null } untypedBase })
+                continue;
+
+            System.Threading.Interlocked.Increment(ref _chainBases);
+
+            var current = untypedBase;
+            var depth = 0;
+            string root;
+            var walked = new List<LocalVariable> { untypedBase };
+
+            while (true)
+            {
+                if (multiplyDefined.Contains(current))
+                {
+                    root = "(definit de mai multe ori)";
+                    break;
+                }
+
+                if (!definitions.TryGetValue(current, out var definition))
+                {
+                    // Nothing in the body writes it, so the value arrives with the method itself.
+                    root = current.IsThis ? "INTRARE this"
+                        : current.IsMethodInfo ? "INTRARE MethodInfo*"
+                        : method.ParameterLocals.Contains(current) ? "INTRARE parametru"
+                        : $"INTRARE registru nedefinit ({current.Register.Name})";
+                    break;
+                }
+
+                if (ChainStep(definition, out root) is not { } next)
+                {
+                    if (root == StackSlotRoot)
+                        root += SlotUsage(method, definition);
+
+                    break;
+                }
+
+                current = next;
+                walked.Add(current);
+
+                if (++depth >= 24)
+                {
+                    root = "(lant prea lung)";
+                    break;
+                }
+            }
+
+            ChainRoots.AddOrUpdate(root, 1, (_, v) => v + 1);
+            ChainDepths.AddOrUpdate(depth, 1, (_, v) => v + 1);
+
+            foreach (var link in walked)
+                if (ChainRootFor(link) == null)
+                    ChainRootOf.Add(link, root);
+        }
+    }
+
+    // One link of the walk: either the local this definition reads its value from - keep going - or null
+    // plus the name of what the chain ends in.
+    private static LocalVariable? ChainStep(Instruction definition, out string root)
+    {
+        root = definition.OpCode.ToString();
+
+        if (definition.OpCode == OpCode.Move && definition.Operands.Count > 1)
+        {
+            switch (definition.Operands[1])
+            {
+                // A copy carries the type in whichever direction has one, so follow it.
+                case LocalVariable { Type: null } copy:
+                    return copy;
+                case LocalVariable copied:
+                    root = $"copie dintr-un local TIPAT ({Describe(copied.Type)})";
+                    return null;
+                case MemoryOperand memory:
+                    if (memory.Index != null || memory.Scale != 0)
+                    {
+                        root = "citire indexata (element de vector)";
+                        return null;
+                    }
+
+                    // The link this table exists to see through: a load whose own base is untyped.
+                    if (memory.Base is LocalVariable { Type: null } deeper)
+                        return deeper;
+
+                    if (memory.Base is LocalVariable typedBase)
+                    {
+                        root = $"citire dintr-o baza TIPATA, offset nerezolvat ({Describe(typedBase.Type)})";
+                        return null;
+                    }
+
+                    root = memory.Base == null
+                        ? "citire de la adresa absoluta"
+                        : $"citire cu baza {memory.Base.GetType().Name}";
+                    return null;
+                case AddressOf address:
+                    // Split by what the address points at: only a target that is already typed, and typed
+                    // as a value type, can ever give the pointer a meaning the field resolver can use.
+                    root = address.Target switch
+                    {
+                        LocalVariable { Type: { IsValueType: true } target } => $"AddressOf pe local TIPAT valoare ({target.FullName})",
+                        LocalVariable { Type: { } target } => $"AddressOf pe local TIPAT referinta ({Describe(target)})",
+                        LocalVariable slot when slot.Register.Name.StartsWith("stack_") => StackSlotRoot,
+                        LocalVariable => "AddressOf pe local fara tip",
+                        _ => $"AddressOf pe {address.Target.GetType().Name}",
+                    };
+                    return null;
+                default:
+                    root = $"Move <- {definition.Operands[1].GetType().Name}";
+                    return null;
+            }
+        }
+
+        if (definition.OpCode is OpCode.Call or OpCode.CallVoid)
+        {
+            root = definition.Operands[0] switch
+            {
+                MethodAnalysisContext called => $"apel rezolvat, retur {Describe(called.ReturnType)}",
+                Immediate => "apel NEREZOLVAT (adresa bruta)",
+                LocalVariable => "apel prin MethodInfo*",
+                _ => $"apel <- {definition.Operands[0].GetType().Name}",
+            };
+            return null;
+        }
+
+        if (definition.OpCode is OpCode.Add or OpCode.Subtract && definition.Operands.Count > 2)
+        {
+            // A constant offset here means the fold could not run (more than one definition); a register
+            // offset is a computed address the fold can never handle.
+            root = definition.Operands[2] is Immediate
+                ? $"{definition.OpCode} cu offset constant (nefoldat)"
+                : $"{definition.OpCode} cu offset calculat";
+            return null;
+        }
+
+        if (definition.OpCode == OpCode.Phi)
+        {
+            var typed = 0;
+            for (var i = 1; i < definition.Operands.Count; i++)
+                if (definition.Operands[i] is LocalVariable { Type: not null })
+                    typed++;
+
+            root = typed > 0 ? "Phi cu cel putin o intrare tipata" : "Phi fara nicio intrare tipata";
+            return null;
+        }
+
+        return null;
+    }
+
+    private const string StackSlotRoot = "AddressOf pe SLOT DE STIVA fara tip";
+
+    // The dominant root by a factor of two, so it gets its own sub-question: a stack slot is typed only by
+    // TypeAddressedLocals, which needs to see the address AS a call argument. If il2cpp copied the address
+    // into a register first, that rule cannot see it and the slot stays untyped - which would be a missing
+    // rule, not a missing fact. This says which it is.
+    private static string SlotUsage(MethodAnalysisContext method, Instruction definition)
+    {
+        if (definition.Operands[1] is not AddressOf { Target: LocalVariable slot })
+            return " [?]";
+
+        // Locals that hold the address of this slot, so an argument that is one of them is the address.
+        var aliases = new HashSet<LocalVariable>();
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+            if (instruction.OpCode == OpCode.Move && instruction.Operands.Count > 1
+                && instruction.Operands[0] is LocalVariable alias
+                && instruction.Operands[1] is AddressOf { Target: LocalVariable aliased }
+                && ReferenceEquals(aliased, slot))
+                aliases.Add(alias);
+
+        var direct = false;
+        var viaCopy = false;
+        var unresolved = false;
+
+        foreach (var instruction in method.ControlFlowGraph.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.Call or OpCode.CallVoid or OpCode.IndirectCall))
+                continue;
+
+            var resolved = instruction.Operands.Count > 0 && instruction.Operands[0] is MethodAnalysisContext;
+
+            for (var i = 1; i < instruction.Operands.Count; i++)
+            {
+                var isAddress = instruction.Operands[i] is AddressOf { Target: LocalVariable argued } && ReferenceEquals(argued, slot);
+                var isAlias = instruction.Operands[i] is LocalVariable argument && aliases.Contains(argument);
+
+                if (!isAddress && !isAlias)
+                    continue;
+
+                if (!resolved)
+                    unresolved = true;
+                else if (isAddress)
+                    direct = true;
+                else
+                    viaCopy = true;
+            }
+        }
+
+        return direct ? " -> argument DIRECT la un apel rezolvat"
+            : viaCopy ? " -> argument PRIN COPIE la un apel rezolvat"
+            : unresolved ? " -> argument doar la un apel nerezolvat"
+            : " -> adresa nu ajunge la niciun apel";
+    }
+
+    // Short category rather than a full name: the table is about which KIND of value a chain starts from,
+    // and full names would split every row into hundreds.
+    private static string Describe(TypeAnalysisContext? type) => type switch
+    {
+        null => "fara tip",
+        ByRefTypeAnalysisContext => "byref",
+        SzArrayTypeAnalysisContext => "vector",
+        RuntimeClassTypeAnalysisContext => "Il2CppClass*",
+        StaticFieldStorageTypeAnalysisContext => "static storage",
+        RuntimeMethodInfoAnalysisContext => "MethodInfo*",
+        RuntimeFieldInfoAnalysisContext => "FieldInfo*",
+        { IsValueType: true } => "tip valoare",
+        _ => "tip referinta",
+    };
 
     // A type-metadata global load (Move local, typeof(T)) puts the runtime class pointer for T into
     // the local - an Il2CppClass*, not an instance of T. That is known exactly from the instruction,

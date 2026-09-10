@@ -20,6 +20,37 @@ public class X86InstructionSet : Cpp2IlInstructionSet
 
     public override BaseCallingConventionResolver CallingConventionResolver => CallingConventions;
 
+    /// <summary>
+    /// Models an xmm register as its four 32-bit lanes rather than as one scalar. MSVC compiles "copy a
+    /// small float struct and replace one field of it" - Rect.SetWidth, Color.Alpha, and every other
+    /// with-er in the game - into a lane permutation: load all 16 bytes, rotate the target field into
+    /// lane 0, movss the new value over it, rotate back, store all 16 bytes. Under a scalar model the
+    /// shufps expansion had to invent lane sub-registers no other opcode reads or writes, and finished by
+    /// rewriting the whole destination from one of them; that single move killed the definitions of every
+    /// register feeding it, so dead-code elimination took the argument loads with it and the method
+    /// returned a zeroed struct for every input. Lane 0 keeps the register's own name so every scalar
+    /// float opcode addresses it unchanged. CPP2IL_XMM_LANES=0 goes back to the scalar model, where a
+    /// lane permutation is a marker rather than an expansion that quietly discards the body.
+    /// </summary>
+    private static readonly bool XmmLanes = Environment.GetEnvironmentVariable("CPP2IL_XMM_LANES") != "0";
+
+    private const int LaneBytes = 4;
+
+    // Lane 0 is the register itself, so a value that only ever lived in the low lane is the same operand
+    // it was before, and nothing that reads a float has to know lanes exist.
+    private static ISIL.IOperand Lane(ISIL.IOperand operand, int lane) => lane == 0
+        ? operand
+        : operand switch
+        {
+            ISIL.Register register => new ISIL.Register(null, $"{register.Name}_{lane}"),
+            ISIL.MemoryOperand memory => new ISIL.MemoryOperand(memory.Base, memory.Index, memory.Addend + lane * LaneBytes, memory.Scale),
+            ISIL.StackOffset slot => new ISIL.StackOffset(slot.Offset + lane * LaneBytes),
+            _ => operand,
+        };
+
+    private static bool IsXmmOperand(Instruction instruction, int operand)
+        => instruction.GetOpKind(operand) == OpKind.Register && instruction.GetOpRegister(operand).IsXMM();
+
     private static ISIL.Immediate Imm(long value) => new(value);
     private static ISIL.Immediate Imm(ulong value) => new(unchecked((long)value));
 
@@ -55,9 +86,15 @@ public class X86InstructionSet : Cpp2IlInstructionSet
     {
         var instructions = new List<ISIL.Instruction>();
         var addresses = new List<ulong>();
+        var body = X86Utils.Iterate(context);
 
-        foreach (var instruction in X86Utils.Iterate(context))
-            ConvertInstructionStatement(instruction, instructions, addresses, context);
+        // Splitting a 128-bit move into its four lanes only pays for itself where something actually
+        // permutes lanes. Everywhere else an xmm register is read back exactly as it was written, so the
+        // split buys nothing and turns each unresolvable 16-byte copy into four unresolvable 4-byte ones.
+        var permutesLanes = XmmLanes && body.Any(i => i.Mnemonic is Mnemonic.Shufps or Mnemonic.Unpcklps);
+
+        foreach (var instruction in body)
+            ConvertInstructionStatement(instruction, instructions, addresses, context, permutesLanes);
 
         // Add return if the function doesn't end with one already
         if (instructions.Count > 0 && instructions[^1].OpCode != ISIL.OpCode.Return)
@@ -195,11 +232,11 @@ public class X86InstructionSet : Cpp2IlInstructionSet
     internal List<ISIL.Instruction> GetIsilFromInstruction(Instruction instruction)
     {
         var instructions = new List<ISIL.Instruction>();
-        ConvertInstructionStatement(instruction, instructions, [], null!);
+        ConvertInstructionStatement(instruction, instructions, [], null!, laneTracking: false);
         return instructions;
     }
 
-    private void ConvertInstructionStatement(Instruction instruction, List<ISIL.Instruction> instructions, List<ulong> addresses, MethodAnalysisContext context)
+    private void ConvertInstructionStatement(Instruction instruction, List<ISIL.Instruction> instructions, List<ulong> addresses, MethodAnalysisContext context, bool laneTracking)
     {
         var callNoReturn = false;
         int operandSize;
@@ -232,11 +269,8 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             case Mnemonic.Movzx: // For all intents and purposes we don't care about zero-extending
             case Mnemonic.Movsx: // move with sign-extendign
             case Mnemonic.Movsxd: // same
-            case Mnemonic.Movaps: // Movaps is basically just a mov but with the potential future detail that the size is dependent on reg size
-            case Mnemonic.Movups: // Movaps but unaligned
             case Mnemonic.Movd: // Mov but specifically dword
             case Mnemonic.Movq: // Mov but specifically qword
-            case Mnemonic.Movdqa: // Movaps but multiple integers at once in theory
             case Mnemonic.Cvtdq2ps: // Technically a convert double to single, but for analysis purposes we can just treat it as a move
             case Mnemonic.Cvtps2pd: // same, but float to double
             case Mnemonic.Cvtdq2pd: // int to double
@@ -251,13 +285,47 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             case Mnemonic.Cvtsi2sd: // integer to double
             case Mnemonic.Cvttps2dq: // packed single to int (truncate)
             case Mnemonic.Cvttpd2dq: // packed double to int (truncate)
-            case Mnemonic.Movdqu: // DEST[127:0] := SRC[127:0]
                 Add(instruction.IP, ISIL.OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
+            // DEST[127:0] := SRC[127:0]. All 16 bytes really do move, so with lanes on this is four
+            // moves; as one it silently dropped three quarters of every small-struct copy in the game.
+            case Mnemonic.Movaps: // Movaps is basically just a mov but with the potential future detail that the size is dependent on reg size
+            case Mnemonic.Movups: // Movaps but unaligned
+            case Mnemonic.Movdqa: // Movaps but multiple integers at once in theory
+            case Mnemonic.Movdqu:
+                {
+                    var wideDestination = ConvertOperand(instruction, 0);
+                    var wideSource = ConvertOperand(instruction, 1);
+
+                    if (!laneTracking || (!IsXmmOperand(instruction, 0) && !IsXmmOperand(instruction, 1)))
+                    {
+                        Add(instruction.IP, ISIL.OpCode.Move, wideDestination, wideSource);
+                        break;
+                    }
+
+                    for (var lane = 0; lane < 4; lane++)
+                        Add(instruction.IP, ISIL.OpCode.Move, Lane(wideDestination, lane), Lane(wideSource, lane));
+
+                    break;
+                }
             case Mnemonic.Movss: // scalar single - as a move, but a load from a constant address is a float literal
             case Mnemonic.Movsd: // scalar double
-                Add(instruction.IP, ISIL.OpCode.Move, ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, instruction.Mnemonic == Mnemonic.Movss, context));
-                break;
+                {
+                    var single = instruction.Mnemonic == Mnemonic.Movss;
+                    Add(instruction.IP, ISIL.OpCode.Move, ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, single, context));
+
+                    // Loading a scalar from memory clears the lanes above it; loading it from another
+                    // register leaves them alone. Without that the stale lanes of a struct loaded earlier
+                    // would be written back out by a later 16-byte store.
+                    if (laneTracking && IsXmmOperand(instruction, 0) && !IsXmmOperand(instruction, 1))
+                    {
+                        var scalarDestination = ConvertOperand(instruction, 0);
+                        for (var lane = single ? 1 : 2; lane < 4; lane++)
+                            Add(instruction.IP, ISIL.OpCode.Move, Lane(scalarDestination, lane), Imm(0));
+                    }
+
+                    break;
+                }
             case Mnemonic.Cbw: // AX := sign-extend AL
                 Add(instruction.IP, ISIL.OpCode.Move, new ISIL.Register(null, X86Utils.GetRegisterName(Register.AX)),
                     new ISIL.Register(null, X86Utils.GetRegisterName(Register.AL)));
@@ -568,66 +636,30 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 break;
 
             case Mnemonic.Shufps: // Packed Interleave Shuffle of Quadruplets of Single Precision Floating-Point Values
-                {
-                    if (instruction.Op1Kind == OpKind.Memory)
-                        goto default;
-
-                    var imm = instruction.Immediate8;
-                    var src1 = X86Utils.GetRegisterName(instruction.Op0Register);
-                    var src2 = X86Utils.GetRegisterName(instruction.Op1Register);
-
-                    // Element selection
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, "XMM_TEMP" + "_0"),
-                        new ISIL.Register(null, $"{src1}_{imm & 0b11}"));
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, "XMM_TEMP" + "_1"),
-                        new ISIL.Register(null, $"{src1}_{(imm >> 2) & 0b11}"));
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, "XMM_TEMP" + "_2"),
-                        new ISIL.Register(null, $"{src2}_{(imm >> 4) & 0b11}"));
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, "XMM_TEMP" + "_3"),
-                        new ISIL.Register(null, $"{src2}_{(imm >> 6) & 0b11}"));
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        ConvertOperand(instruction, 0),
-                        new ISIL.Register(null, "XMM_TEMP"));
-
-                    break;
-                }
-
             case Mnemonic.Unpcklps: // Unpack and Interleave Low Packed Single Precision Floating-Point Values
                 {
-                    if (instruction.Op1Kind == OpKind.Memory)
+                    if (!laneTracking || instruction.Op1Kind == OpKind.Memory)
                         goto default;
 
-                    var src1 = X86Utils.GetRegisterName(instruction.Op0Register);
-                    var src2 = X86Utils.GetRegisterName(instruction.Op1Register);
+                    var shuffleDestination = ConvertOperand(instruction, 0);
+                    var shuffleSource = ConvertOperand(instruction, 1);
 
-                    // Interleaving lanes
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, (string?)"XMM_TEMP" + "_0"),
-                        new ISIL.Register(null, $"{src1}_0")); // SRC1[31:0]
+                    // Which lane of which operand each result lane takes. shufps takes its low two from
+                    // DEST and its high two from SRC, selected by the immediate; unpckl interleaves the
+                    // low halves of the two. Both are almost always emitted with SRC == DEST, as a plain
+                    // rotate of one register.
+                    var imm = instruction.Immediate8;
+                    var picks = instruction.Mnemonic == Mnemonic.Shufps
+                        ? new (ISIL.IOperand From, int Lane)[] { (shuffleDestination, imm & 0b11), (shuffleDestination, (imm >> 2) & 0b11), (shuffleSource, (imm >> 4) & 0b11), (shuffleSource, (imm >> 6) & 0b11) }
+                        : new (ISIL.IOperand From, int Lane)[] { (shuffleDestination, 0), (shuffleSource, 0), (shuffleDestination, 1), (shuffleSource, 1) };
 
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, (string?)"XMM_TEMP" + "_1"),
-                        new ISIL.Register(null, $"{src2}_0")); // SRC2[31:0]
+                    // Read every lane out before writing any back: source and destination overlap, so a
+                    // lane written in place would be re-read as the input of a later one.
+                    for (var lane = 0; lane < 4; lane++)
+                        Add(instruction.IP, ISIL.OpCode.Move, new ISIL.Register(null, $"XMM_TEMP_{lane}"), Lane(picks[lane].From, picks[lane].Lane));
 
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, (string?)"XMM_TEMP" + "_2"),
-                        new ISIL.Register(null, $"{src1}_1")); // SRC1[63:32]
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        new ISIL.Register(null, (string?)"XMM_TEMP" + "_3"),
-                        new ISIL.Register(null, $"{src2}_1")); // SRC2[63:32]
-
-                    Add(instruction.IP, ISIL.OpCode.Move,
-                        ConvertOperand(instruction, 0),
-                        new ISIL.Register(null, (string?)"XMM_TEMP"));
+                    for (var lane = 0; lane < 4; lane++)
+                        Add(instruction.IP, ISIL.OpCode.Move, Lane(shuffleDestination, lane), new ISIL.Register(null, $"XMM_TEMP_{lane}"));
 
                     break;
                 }

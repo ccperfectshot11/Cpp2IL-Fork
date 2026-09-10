@@ -18,6 +18,20 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
 
     const int ptrSize = 8;
 
+    // A stack argument is addressed from the callee's ENTRY stack pointer, and that sits below the return
+    // address the call pushed - and, under msvc, below the caller's 32-byte shadow space as well. Counting
+    // the slots from zero named a slot the body never touches: measured over the whole game, only 1.225 of
+    // 16.165 stack parameters ever matched a local, and those that did matched the slot belonging to a
+    // DIFFERENT parameter, so they were typed wrong rather than left untyped.
+    // On by default; CPP2IL_STACK_PARAMS=0 restores the old numbering.
+    private static readonly bool CorrectStackParameterBase = Environment.GetEnvironmentVariable("CPP2IL_STACK_PARAMS") != "0";
+
+    private const int PeReturnAddressAndShadowSpace = 0x28;
+    private const int SysVReturnAddress = 0x8;
+
+    private static int StackArgumentBase(bool isPe) =>
+        !CorrectStackParameterBase ? 0 : isPe ? PeReturnAddressAndShadowSpace : SysVReturnAddress;
+
     private static bool IsXMM(ParameterAnalysisContext par) => IsFloatingPoint(par.ParameterType);
 
     public override Register ReturnRegister(MethodAnalysisContext ctx)
@@ -174,7 +188,7 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
                 }
                 else
                 {
-                    args.Add(new StackOffset((i - 4) * ptrSize));
+                    args.Add(new StackOffset(StackArgumentBase(true) + (i - 4) * ptrSize));
                 }
 
                 i++;
@@ -231,7 +245,7 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
                 {
                     if (freg == LinuxFloatingRegister.Stack)
                     {
-                        args.Add(new StackOffset(stack));
+                        args.Add(new StackOffset(StackArgumentBase(false) + stack));
                         stack += ptrSize;
                     }
                     else args.Add(ToOperand(freg++));
@@ -240,7 +254,7 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
                 {
                     if (nreg == LinuxNormalRegister.Stack)
                     {
-                        args.Add(new StackOffset(stack));
+                        args.Add(new StackOffset(StackArgumentBase(false) + stack));
                         stack += ptrSize;
                     }
                     else args.Add(ToOperand(nreg++));

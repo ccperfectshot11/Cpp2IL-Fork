@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -17,6 +18,13 @@ public class StackAnalyzer
     }
 
     private static int _stackDiagCount;
+
+    // Recognises `lea frame, [rsp+k]` as a frame-pointer setup alongside the plain `mov frame, rsp` that
+    // was already handled, and follows the resulting address through copies and constant displacements.
+    // On by default; CPP2IL_FRAME_LEA=0 leaves only the plain copy form, which is what this pass used to
+    // recognise. The flow-sensitivity below is not part of the switch - it is a fix on its own.
+    private static readonly bool FrameAliases = Environment.GetEnvironmentVariable("CPP2IL_FRAME_LEA") != "0";
+
     private Dictionary<Block, StackState> _inComingState = [];
     private Dictionary<Block, StackState> _outGoingState = [];
     private Dictionary<Instruction, StackState> _instructionState = [];
@@ -55,51 +63,151 @@ public class StackAnalyzer
 
     // consider mov [reg], [stack pointer]
     // now we need to handle [reg] as if it were a stack pointer, forever.
+    //
+    // Flow-sensitive, because it has to be. An alias lives from the instruction that establishes it until
+    // something else writes that register, and on x64 that "something else" is always the epilogue putting
+    // the caller's frame pointer back. Asking flow-insensitively whether the register is ever written
+    // again therefore answered yes for 19.451 of the 19.797 methods that set a frame pointer up at all,
+    // and every frame-relative access in them stayed an unresolvable [untyped local + offset].
     private void ResolveFrameAliases(ISILControlFlowGraph graph)
     {
-        var aliases = new Dictionary<string, int>();
-
-        // The frame-pointer setup (mov rbp, rsp) usually lives in the prologue - the entry block
-        // itself - so scanning only its successors, as this used to, missed it entirely and left
-        // every rbp-relative access as an unresolved memory load. Scan the entry block too.
-        var prologue = new[] { graph.EntryBlock }.Concat(graph.EntryBlock.Successors);
-        foreach (var instruction in prologue.SelectMany(b => b.Instructions))
+        // Register name -> distance of its value from the stack pointer AS IT WAS ON ENTRY. Measuring from
+        // entry rather than from here is what makes the value survive the pushes and the frame allocation:
+        // those move the stack pointer, not the alias.
+        var incoming = new Dictionary<Block, Dictionary<string, int>>
         {
-            if (instruction is { OpCode: OpCode.Move, Operands: [Register destination, Register { Name: "rsp" }] }
-                && _instructionState.TryGetValue(instruction, out var atCopy))
-                aliases[destination.Name] = atCopy.Size;
-        }
+            { graph.EntryBlock, new Dictionary<string, int>() },
+        };
 
-        if (aliases.Count == 0)
-            return;
+        var pending = new Stack<Block>();
+        pending.Push(graph.EntryBlock);
+        var visits = 0;
 
-        // Following a register that gets reassigned would need flow analysis, so stop trusting it entirely
-        foreach (var instruction in graph.Instructions)
+        while (pending.Count > 0)
         {
-            if (instruction is { OpCode: OpCode.Move, Operands: [Register, Register { Name: "rsp" }] })
-                continue;
+            var block = pending.Pop();
+            var state = new Dictionary<string, int>(incoming[block]);
 
-            if (instruction.Destination is Register written)
-                aliases.Remove(written.Name);
-        }
+            foreach (var instruction in block.Instructions)
+                ApplyFrameAlias(instruction, state);
 
-        foreach (var instruction in graph.Instructions)
-        {
-            if (!_instructionState.TryGetValue(instruction, out var state))
-                continue;
+            if (MaxBlockVisitCount != -1 && ++visits > MaxBlockVisitCount)
+                throw new DecompilerException($"Frame aliases not settling! ({visits} blocks already visited)");
 
-            for (var i = 0; i < instruction.Operands.Count; i++)
+            foreach (var successor in block.Successors)
             {
-                if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: Register frameBase } memory)
+                if (!incoming.TryGetValue(successor, out var existing))
+                {
+                    incoming[successor] = new Dictionary<string, int>(state);
+                    pending.Push(successor);
+                    continue;
+                }
+
+                // A register is an alias at a join only if every path agrees it is, and agrees on where
+                // the frame starts. The meet only ever drops entries, so this settles.
+                var merged = existing.Where(e => state.TryGetValue(e.Key, out var mine) && mine == e.Value)
+                    .ToDictionary(e => e.Key, e => e.Value);
+
+                if (merged.Count == existing.Count)
                     continue;
 
-                if (!aliases.TryGetValue(frameBase.Name, out var frameOffset))
-                    continue;
+                incoming[successor] = merged;
+                pending.Push(successor);
+            }
+        }
 
-                instruction.SetOperand(i, new StackOffset((int)(frameOffset + memory.Addend - state.Size)));
+        // Second walk, now that the entry state of every block is final: replay each block and rewrite the
+        // frame-relative memory operands against the alias that is live exactly there.
+        foreach (var block in graph.Blocks)
+        {
+            if (!incoming.TryGetValue(block, out var entryState))
+                continue; // unreachable
+
+            var state = new Dictionary<string, int>(entryState);
+
+            foreach (var instruction in block.Instructions)
+            {
+                // Rewrite before applying the instruction: `mov rbp, [rbp+8]` reads through the old alias
+                // and only then stops being one.
+                if (_instructionState.TryGetValue(instruction, out var stackState))
+                    for (var i = 0; i < instruction.Operands.Count; i++)
+                    {
+                        if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: Register frameBase } memory)
+                            continue;
+
+                        if (!state.TryGetValue(frameBase.Name, out var frameOffset))
+                            continue;
+
+                        // CorrectOffsets adds the stack state back, so hand it the value relative to the
+                        // stack pointer here, not the entry-relative one this pass carries around.
+                        instruction.SetOperand(i, new StackOffset((int)(frameOffset + memory.Addend - stackState.Size)));
+                    }
+
+                ApplyFrameAlias(instruction, state);
             }
         }
     }
+
+    // One instruction's effect on the set of live frame aliases: it either establishes one, or it clobbers
+    // the register it writes. ShiftStack has no destination and so leaves every alias intact - which is the
+    // point of measuring them from the entry stack pointer.
+    private void ApplyFrameAlias(Instruction instruction, Dictionary<string, int> state)
+    {
+        if (instruction.Destination is not Register written)
+            return;
+
+        if (FrameAliasDistance(instruction) is { } distance && _instructionState.TryGetValue(instruction, out var stackState))
+        {
+            state[written.Name] = stackState.Size + distance;
+            return;
+        }
+
+        // A frame address stays a frame address across a plain copy and across a constant displacement.
+        // The displacement case is not an optimisation: `lea rax, [rbp+30h]` arrives here as an Add,
+        // because the lifter only keeps the address-of shape for leas measured from rsp itself.
+        if (CarriedFrameOffset(instruction, state) is { } carried)
+            state[written.Name] = carried;
+        else
+            state.Remove(written.Name);
+    }
+
+    private static int? CarriedFrameOffset(Instruction instruction, Dictionary<string, int> state)
+    {
+        if (!FrameAliases || instruction.Operands.Count < 2 || instruction.Operands[1] is not Register source)
+            return null;
+
+        if (!state.TryGetValue(source.Name, out var offset))
+            return null;
+
+        if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2)
+            return offset;
+
+        if (instruction.Operands.Count == 3 && instruction.Operands[2] is Immediate shift)
+            return instruction.OpCode switch
+            {
+                OpCode.Add => offset + (int)shift.Value,
+                OpCode.Subtract => offset - (int)shift.Value,
+                _ => null,
+            };
+
+        return null;
+    }
+
+    // How far the value this instruction writes sits from the stack pointer AS IT IS AT THIS INSTRUCTION,
+    // or null if the instruction is not a frame-pointer setup at all.
+    //
+    // `mov rbp, rsp` copies the stack pointer itself. `lea rbp, [rsp+k]` - which the lifter hands over as
+    // a move of the ADDRESS of a stack slot - puts a fixed distance from it into the register instead, and
+    // that is what msvc emits whenever the frame is too big for the one-byte displacements a plain copy
+    // would leave it needing. Both establish the same alias; only the constant differs. Recognising only
+    // the first form left every access through the second as an unresolvable [untyped local + offset] -
+    // measured as the single largest source of "Unmanaged memory load" markers in the whole output.
+    private static int? FrameAliasDistance(Instruction instruction) =>
+        FrameAliases && instruction is { OpCode: OpCode.Move, Operands: [Register, AddressOf { Target: StackOffset slot }] }
+            ? slot.Offset
+            : instruction is { OpCode: OpCode.Move, Operands: [Register, Register { Name: "rsp" }] }
+                ? 0
+                : null;
 
     private void CorrectOffsets(ISILControlFlowGraph graph)
     {
