@@ -37,6 +37,10 @@ public static class StackCoercion
     // On by default (CPP2IL_STACK_TYPES=0 disables).
     public static readonly bool Enabled = Environment.GetEnvironmentVariable("CPP2IL_STACK_TYPES") != "0";
 
+    // Settles native-int arithmetic on int64, the only width C# can spell those operators on. Shares its
+    // switch with the emitter's half of the same repair (CPP2IL_NINT_ARITH=0 disables both).
+    private static readonly bool NativeArithmeticAsInt64 = Environment.GetEnvironmentVariable("CPP2IL_NINT_ARITH") != "0";
+
     /// <summary>
     /// What the evaluation stack actually distinguishes. Narrower integers do not appear: bool, char and
     /// everything below int32 all arrive as int32, which is why storing an int32 into a byte field needs no
@@ -300,7 +304,9 @@ public static class StackCoercion
                 or CilCode.Ceq or CilCode.Cgt or CilCode.Cgt_Un or CilCode.Clt or CilCode.Clt_Un:
                 return Binary(body, stack, edits, index,
                     comparison: code is CilCode.Ceq or CilCode.Cgt or CilCode.Cgt_Un or CilCode.Clt or CilCode.Clt_Un,
-                    integerOnly: code is CilCode.And or CilCode.Or or CilCode.Xor or CilCode.Div_Un or CilCode.Rem_Un);
+                    integerOnly: code is CilCode.And or CilCode.Or or CilCode.Xor or CilCode.Div_Un or CilCode.Rem_Un,
+                    nativeAsInt64: NativeArithmeticAsInt64 && code is CilCode.Add or CilCode.Sub or CilCode.Mul or CilCode.Div
+                        or CilCode.Rem or CilCode.And or CilCode.Or or CilCode.Xor);
 
             // A shift count is its own thing - an int32 or a native int, never the shifted value's type -
             // so the two sides are not reconciled with each other and only the count is brought into range.
@@ -440,7 +446,7 @@ public static class StackCoercion
     /// instead would be a guess about which of the two types the inference got right.
     /// </summary>
     private static bool Binary(CilMethodBody body, List<Value> stack, List<Edit> edits, int index,
-        bool comparison, bool integerOnly)
+        bool comparison, bool integerOnly, bool nativeAsInt64)
     {
         if (stack.Count < 2)
             return false;
@@ -448,7 +454,7 @@ public static class StackCoercion
         var left = stack[^2];
         var right = stack[^1];
         var factory = Module(body).CorLibTypeFactory;
-        var target = CommonOperandType(left, right, factory, integerOnly);
+        var target = CommonOperandType(left, right, factory, integerOnly, nativeAsInt64);
 
         if (target != null)
         {
@@ -463,10 +469,18 @@ public static class StackCoercion
         return Pop(stack, 2) && Push(stack, result, index + 1);
     }
 
-    private static TypeSignature? CommonOperandType(Value left, Value right, CorLibTypeFactory factory, bool integerOnly)
+    private static TypeSignature? CommonOperandType(Value left, Value right, CorLibTypeFactory factory,
+        bool integerOnly, bool nativeAsInt64)
     {
         if (left.Kind == right.Kind)
         {
+            // Two native ints need no conversion to make the opcode verify, but C# has no arithmetic on
+            // IntPtr at all, so the pair decompiles to something that does not compile. int64 is the same
+            // value - conv.i8 sign-extends and every opcode routed here commutes with that - and it is a
+            // type the language can actually spell the operator on.
+            if (left.Kind == Kind.Native && nativeAsInt64)
+                return factory.Int64;
+
             // Two structs still have to be unwrapped, and doing so is only right where both hold the same
             // primitive - otherwise the opcode would be handed two different things than it was handed
             // before.
@@ -517,8 +531,10 @@ public static class StackCoercion
         if (left.Kind == Kind.Int64 || right.Kind == Kind.Int64)
             return factory.Int64;
 
+        // Same reason as the pair above: the register held a native int, and int64 is the width the
+        // language can write the operator on.
         if (left.Kind == Kind.Native || right.Kind == Kind.Native)
-            return factory.IntPtr;
+            return nativeAsInt64 ? factory.Int64 : factory.IntPtr;
 
         return null;
     }

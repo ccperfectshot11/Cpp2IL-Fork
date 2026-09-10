@@ -35,6 +35,17 @@ public static class IlGenerator
     // Casts an untyped local to what the use site expects. On by default (CPP2IL_CAST_UNTYPED=0 disables).
     private static readonly bool CastUntypedLocals = Environment.GetEnvironmentVariable("CPP2IL_CAST_UNTYPED") != "0";
 
+    // Restores the castclass il2cpp inlined, where the value's own type says the cast went missing. On by
+    // default (CPP2IL_CAST_MISMATCH=0 disables) once measured with the class read below: STRICT
+    // 11,363 -> 11,677, and it empties the "cannot convert 'System.Delegate' to 'System.Action'" shape,
+    // 264 methods, on its own. Clean types and class-level errors both unchanged.
+    private static readonly bool CastMismatchedValues = Environment.GetEnvironmentVariable("CPP2IL_CAST_MISMATCH") != "0";
+
+    // Reads an object's class off the object where the callee's parameter is a System.Type. On by default
+    // (CPP2IL_KLASS_TYPE=0 disables): it empties the "cannot convert 'System.Delegate' to 'System.Type'"
+    // shape, 228 methods, and fires at 314 argument positions.
+    private static readonly bool KlassArgumentsAsType = Environment.GetEnvironmentVariable("CPP2IL_KLASS_TYPE") != "0";
+
     // Pushes null rather than a native zero where a reference is expected. On by default, worth 45 methods.
     private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") != "0";
 
@@ -1437,6 +1448,142 @@ public static class IlGenerator
         instructions.Add(CilOpCodes.Unbox_Any, expectedType.ToTypeSignature().ToTypeDefOrRef());
     }
 
+    /// <summary>
+    /// Puts back the cast il2cpp inlined. A C# <c>(Foo)x</c> leaves no castclass in the binary: the check
+    /// becomes a class-pointer compare and the cast itself becomes a plain move of the object, so the value
+    /// reaching the destination still carries the type it had before the cast - <c>System.Delegate</c> for
+    /// everything Delegate.Combine produced, the object's own type for the rest. The destination is declared
+    /// as the cast's target, so the store is a mismatch: <c>this.DeeplinkOpened = delegate4;</c> against an
+    /// Action field, 292 sites for plain Action and about 450 counting the generic Action&lt;T&gt;s.
+    ///
+    /// castclass is the instruction that was lost, and it re-checks exactly what the excised guard checked,
+    /// so this restores the program rather than papering over the mismatch: on the path the guard admits,
+    /// the value really is a Foo and the cast costs nothing at runtime.
+    ///
+    /// Only where a cast could have been written. A conversion between two unrelated types is not a lost
+    /// cast but a typing mistake further up, and C# rejects it outright (CS0030), so a sibling mismatch is
+    /// left visible instead of being traded for a different error.
+    /// </summary>
+    private static void CastMismatchedValue(IOperand operand, TypeAnalysisContext? expectedType, CilInstructionCollection instructions)
+    {
+        if (!CastMismatchedValues || expectedType == null || SourceType(operand) is not { } sourceType)
+            return;
+
+        if (!IsCastableReference(sourceType) || !IsCastableReference(expectedType))
+            return;
+
+        if (IsAssignableTo(sourceType, expectedType) || !CastExists(sourceType, expectedType))
+            return;
+
+        // The same guard CastUntypedLocal uses: a context with no AsmResolver type behind it cannot be named
+        // in IL at all, and ToTypeSignature throws rather than returning null.
+        if (expectedType.GetExtraData<TypeDefinition>("AsmResolverType") == null && expectedType is not ReferencedTypeAnalysisContext)
+            return;
+
+        instructions.Add(CilOpCodes.Castclass, expectedType.ToTypeSignature().ToTypeDefOrRef());
+    }
+
+    /// <summary>
+    /// The static type of the value an operand loads, for the two shapes that carry one. Everything else -
+    /// an address, a raw memory read, a literal - either has no type that could disagree with the use site
+    /// or is already loaded as exactly what the use site asked for.
+    /// </summary>
+    private static TypeAnalysisContext? SourceType(IOperand operand) => operand switch
+    {
+        // `this` is the declaring type by definition, so it never needs converting to reach one.
+        LocalVariable { IsThis: false, Type: { } type } => type,
+        FieldReference field => field.ResultType,
+        _ => null,
+    };
+
+    // Ordinary reference types only. A value type needs a conversion rather than a cast, an array is
+    // assignable by covariance rules the hierarchy walk below cannot see, and the synthetic il2cpp contexts
+    // and generic parameters are not types a castclass could name.
+    private static bool IsCastableReference(TypeAnalysisContext type) =>
+        !type.IsValueType
+        && type is not (ByRefTypeAnalysisContext or PointerTypeAnalysisContext or SzArrayTypeAnalysisContext
+            or ArrayTypeAnalysisContext or GenericParameterTypeAnalysisContext or RuntimeClassTypeAnalysisContext
+            or RgctxTableTypeAnalysisContext or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
+            or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext);
+
+    // Whether C# would accept an explicit cast between the two at all: a downcast, or anything involving an
+    // interface or System.Object. Two unrelated classes have no conversion in either direction.
+    private static bool CastExists(TypeAnalysisContext from, TypeAnalysisContext to) =>
+        from.FullName == "System.Object" || from.IsInterface || to.IsInterface || IsAssignableTo(to, from);
+
+    /// <summary>
+    /// Whether a value of <paramref name="from"/> can be stored as <paramref name="to"/> with no cast.
+    ///
+    /// Where a link cannot be resolved the answer is "not known to be assignable", which costs a castclass
+    /// that does nothing at runtime when the value does fit. The opposite default would leave the mismatch
+    /// in place, and the mismatch is the error being fixed.
+    /// </summary>
+    private static bool IsAssignableTo(TypeAnalysisContext from, TypeAnalysisContext to)
+        => to.FullName == "System.Object" || Reaches(from, to.FullName, [], 0);
+
+    private static bool Reaches(TypeAnalysisContext type, string? target, HashSet<string> seen, int depth)
+    {
+        // A recovered base chain can cycle and an interface list fans out, so both are bounded.
+        if (depth > 16 || target == null || type.FullName is not { } name || !seen.Add(name))
+            return false;
+
+        if (name == target)
+            return true;
+
+        foreach (var iface in type.InterfaceContexts)
+            if (iface != null && Reaches(iface, target, seen, depth + 1))
+                return true;
+
+        // A generic instance has no definition behind it, so its base type and its interface list both come
+        // back empty. The open form has them, and the ancestry a cast is decided on is the same for every
+        // instantiation: Action<string> is a Delegate because Action`1 is.
+        if (type is GenericInstanceTypeAnalysisContext { GenericType: { } openForm } && Reaches(openForm, target, seen, depth + 1))
+            return true;
+
+        return type.BaseType is { } baseType && !ReferenceEquals(baseType, type) && Reaches(baseType, target, seen, depth + 1);
+    }
+
+    /// <summary>
+    /// Loads an object's class where the callee asked for a <see cref="System.Type"/>.
+    ///
+    /// il2cpp hands these methods an <c>Il2CppClass*</c>, and for the object being tested it reads that
+    /// pointer straight off the object - <c>[obj + 0]</c>, the first field of every Il2CppObject. The read
+    /// does survive lifting, as a zero-offset memory operand, but the general case below loads such an
+    /// operand as its base local, so the object arrives where its class was wanted: an <c>x as Action</c>
+    /// comes out as <c>RuntimeTypeHandle.type_is_assignable_from(typeof(Action), someDelegate)</c>, CS1503,
+    /// and that one callee accounts for 922 of these arguments.
+    ///
+    /// GetType() is the class pointer the native code passed, which makes this a recovery rather than a
+    /// silencing - and it is the same substitution <see cref="TryEmitExactTypeComparison"/> already makes for
+    /// the sibling shape, where the check is a compare instead of a call.
+    /// </summary>
+    private static bool TryLoadClassOfObject(IOperand operand, TypeAnalysisContext? expectedType, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (!KlassArgumentsAsType || expectedType?.FullName != "System.Type")
+            return false;
+
+        // The shape IsKlassPointerLoad matches, with an untyped base admitted as well: a slot nothing could
+        // type is emitted as System.Object, and GetType() is valid on that. A byref base is excluded because
+        // there the zero offset is a real dereference of a managed pointer rather than a class read, and so
+        // are the il2cpp runtime structures, whose reads are already handled as metadata.
+        if (operand is not MemoryOperand { Index: null, Addend: 0, Scale: 0, Base: LocalVariable objLocal })
+            return false;
+
+        if (objLocal.Type is { } baseType && (baseType.IsValueType || baseType is ByRefTypeAnalysisContext || IsRuntimeMetadata(baseType)))
+            return false;
+
+        var corLibScope = method.DeclaringModule!.CorLibTypeFactory.CorLibScope;
+
+        LoadLocal(objLocal, method, locals);
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Callvirt, corLibScope
+            .CreateTypeReference("System", "Object")
+            .CreateMemberReference("GetType", MethodSignature.CreateInstance(
+                corLibScope.CreateTypeReference("System", "Type").ToTypeSignature(false))));
+
+        return true;
+    }
+
     // il2cpp inlines property accessors, so the game's own code reads <X>k__BackingField directly. That
     // name is not a C# identifier, the decompiler prints a sanitised spelling of it, and across assemblies
     // that spelling matches nothing - the largest remaining CS1061 shape. The property it backs carries the
@@ -1748,6 +1895,11 @@ public static class IlGenerator
             return;
         }
 
+        // Ahead of the switch because it replaces the load rather than adding to it: what the callee asked
+        // for is the object's class, and the switch would load the object.
+        if (TryLoadClassOfObject(operand, expectedType, method, locals))
+            return;
+
         switch (operand)
         {
             case Immediate { Value: >= int.MinValue and <= int.MaxValue } immediate:
@@ -1924,6 +2076,8 @@ public static class IlGenerator
                 instructions.Add(CilOpCodes.Ldnull);
                 break;
         }
+
+        CastMismatchedValue(operand, expectedType, instructions);
     }
     
     private static bool TryEmitExactTypeComparison(Instruction instruction, MethodDefinition method,
