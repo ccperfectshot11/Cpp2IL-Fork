@@ -345,6 +345,8 @@ public static class IlGenerator
                 context.Locals.Add(local);
         }
 
+        TypeArithmeticDestinations(context);
+
         // Map ISIL locals to IL
         Dictionary<LocalVariable, CilLocalVariable> locals = [];
         foreach (var local in context.Locals)
@@ -668,6 +670,38 @@ public static class IlGenerator
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Gives a local that only inference failed to type the type its arithmetic plainly produces, so it is
+    /// declared as that primitive rather than as <c>object</c>.
+    ///
+    /// The alternative - declaring it <c>object</c> and boxing on the way in - makes the store legal and the
+    /// next read illegal: `xor` then receives a boxed reference and an int64, which is how Quantum's
+    /// comparison operators ended up returning the same answer for every input. A local that holds the
+    /// result of `a.RawValue - b.RawValue` is a long; saying so once removes the box, the unbox, and the
+    /// mismatch between them.
+    ///
+    /// Runs after every analysis pass has settled, so filling in a type here cannot feed back into field
+    /// resolution or call resolution and change what they decided.
+    /// </summary>
+    private static void TypeArithmeticDestinations(MethodAnalysisContext context)
+    {
+        if (!UnwrapValueStructs)
+            return;
+
+        foreach (var instruction in context.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
+                or OpCode.Modulo or OpCode.And or OpCode.Or or OpCode.Xor or OpCode.ShiftLeft or OpCode.ShiftRight))
+                continue;
+
+            if (instruction.Operands[0] is not LocalVariable { Type: null } destination)
+                continue;
+
+            if (ArithmeticResultType(instruction, context) is { } resultType)
+                destination.Type = resultType;
+        }
     }
 
     // The type a loaded operand leaves on the stack, which is what decides whether it needs unwrapping.
