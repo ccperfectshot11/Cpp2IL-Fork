@@ -768,16 +768,27 @@ public static class IlGenerator
                 // operands are coerced to the (float) result type. A no-op when they already match.
                 var floatConversion = FloatArithmeticConversion(instruction);
 
+                // What the result is typed as is what the operands have to be, and telling the operand
+                // loader so is what lets an unrecovered value be pushed at the right width and an untyped
+                // local be cast instead of staying `object`. Only for arithmetic: a comparison's result is
+                // bool, which says nothing at all about the two things being compared.
+                var operandType = instruction.OpCode is >= OpCode.CheckEqual and <= OpCode.CheckLessOrEqual
+                    ? null
+                    : DestinationType(instruction.Operands[0]);
+
                 if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
                 {
-                    LoadOperand(instruction.Operands[1], method, locals, writeLine);
+                    LoadOperand(instruction.Operands[1], method, locals, writeLine, operandType);
                     if (floatConversion is { } conv1)
                         instructions.Add(conv1);
                 }
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
                 {
-                    LoadOperand(instruction.Operands[2], method, locals, writeLine);
+                    // A shift's second operand is the shift count, always an int32, never the result type.
+                    var rightType = instruction.OpCode is OpCode.ShiftLeft or OpCode.ShiftRight ? null : operandType;
+
+                    LoadOperand(instruction.Operands[2], method, locals, writeLine, rightType);
                     if (floatConversion is { } conv2)
                         instructions.Add(conv2);
                 }
@@ -996,6 +1007,38 @@ public static class IlGenerator
         };
     }
 
+
+    // The stand-in pushed wherever a value could not be recovered. It used to be `ldc.i4.0; conv.i`
+    // unconditionally, which is a native int, and the decompiler prints that as `(IntPtr)0`. Where the
+    // surrounding code is ordinary integer maths the result does not compile - `num = (int)((IntPtr)0 & 16)`
+    // - and that is the CS0019 `IntPtr & int` family, 694 methods, plus the `IntPtr >= IntPtr`
+    // comparisons, 556 more. A zero is a zero in any width, so give it the one the use site expects and the
+    // arithmetic around it stays writable.
+    private static void PushPlaceholderZero(TypeAnalysisContext? expectedType, CilInstructionCollection instructions)
+    {
+        instructions.Add(CilOpCodes.Ldc_I4_0);
+
+        switch (expectedType?.FullName)
+        {
+            // Already an int32 on the stack, and widening it would break the comparison it feeds.
+            case "System.Byte" or "System.SByte" or "System.Int16" or "System.UInt16"
+                or "System.Int32" or "System.UInt32" or "System.Char" or "System.Boolean":
+                return;
+            case "System.Int64" or "System.UInt64":
+                instructions.Add(CilOpCodes.Conv_I8);
+                return;
+            case "System.Single":
+                instructions.Add(CilOpCodes.Conv_R4);
+                return;
+            case "System.Double":
+                instructions.Add(CilOpCodes.Conv_R8);
+                return;
+            default:
+                // A pointer, a reference, or nothing known - keep the native int this has always been.
+                instructions.Add(CilOpCodes.Conv_I);
+                return;
+        }
+    }
     private static void LoadOperand(IOperand operand, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals, IMethodDescriptor writeLine,
         TypeAnalysisContext? expectedType = null)
@@ -1115,8 +1158,7 @@ public static class IlGenerator
                 Analysis.MarkerDiag.Record(memory, method);
                 instructions.Add(CilOpCodes.Ldstr, Diagnostic("Unmanaged memory load: " + operand));
                 instructions.Add(CilOpCodes.Call, writeLine);
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                PushPlaceholderZero(expectedType, instructions);
                 break;
             case RuntimeMethodInfoAnalysisContext runtimeMethod:
                 // A delegate constructor takes its target as a native pointer, which is exactly ldftn.
@@ -1127,8 +1169,7 @@ public static class IlGenerator
                 }
 
                 //Not fully implemented, these basically shouldn't actually ever exist in the final IL.
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                PushPlaceholderZero(expectedType, instructions);
                 break;
             case RuntimeFieldInfoAnalysisContext runtimeField:
                 // fieldof(F), e.g. the handle InitializeArray takes.
@@ -1138,13 +1179,11 @@ public static class IlGenerator
                     break;
                 }
 
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                PushPlaceholderZero(expectedType, instructions);
                 break;
             case RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
                 or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext:
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                PushPlaceholderZero(expectedType, instructions);
                 break;
             case TypeAnalysisContext type:
                 //typeof(T)
