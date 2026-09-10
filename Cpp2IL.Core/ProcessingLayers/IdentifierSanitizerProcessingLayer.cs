@@ -42,6 +42,20 @@ public class IdentifierSanitizerProcessingLayer : Cpp2IlProcessingLayer
 
     public override string Id => "sanitizenames";
 
+    // Only fields are renamed, and only because their declaration is being LOST. The decompiler hides
+    // `<X>k__BackingField` unconditionally, expecting to collapse the field and its two accessors back into
+    // `{ get; set; }` - but that collapse is driven by the accessor body's shape and never fires on a
+    // Cpp2IL body, which carries dead locals and unrecovered stores. So the property is written with
+    // explicit bodies, the field declaration is suppressed, and every use of it is printed with the
+    // sanitised spelling `_X_k__BackingField`, which now refers to nothing: 4,431 references, zero
+    // declarations, 2,886 methods of CS1061 - by far the largest single cause left.
+    //
+    // Renaming the field makes the decompiler stop hiding it, so the declaration appears and matches the
+    // uses. Nothing is lost, because the collapse this defeats was never happening.
+    //
+    // Types and methods are deliberately NOT renamed - see the class comment.
+    private static readonly bool BackingFields = Environment.GetEnvironmentVariable("CPP2IL_SANITIZE_FIELDS") != "0";
+
     public override void Process(ApplicationAnalysisContext appContext, Action<int, int>? progressCallback = null)
     {
         var done = 0;
@@ -50,12 +64,6 @@ public class IdentifierSanitizerProcessingLayer : Cpp2IlProcessingLayer
         {
             foreach (var type in assembly.Types)
             {
-                if (type.Name != "<Module>" && Sanitize(type.Name) is { } typeName)
-                    type.OverrideName = typeName;
-
-                // Collisions are only possible against the other members of the same type, and only when a
-                // real member already carries the sanitised spelling. Rare, but a duplicate name is worse
-                // than an ugly one, so the existing names are held and any clash gets a suffix.
                 var taken = new HashSet<string>(StringComparer.Ordinal);
 
                 foreach (var method in type.Methods)
@@ -63,26 +71,9 @@ public class IdentifierSanitizerProcessingLayer : Cpp2IlProcessingLayer
                 foreach (var field in type.Fields)
                     taken.Add(field.Name);
 
-                foreach (var method in type.Methods)
-                {
-                    if (method.Name is ".ctor" or ".cctor")
-                        continue;
-
-                    if (Sanitize(method.Name) is { } methodName)
-                        method.OverrideName = Unique(methodName, taken);
-                }
-
                 foreach (var field in type.Fields)
-                {
-                    // A property backing field keeps its name so the decompiler can still collapse the pair
-                    // into `{ get; set; }`, which is what the original source said. Cross-type reads of one
-                    // are routed through the property instead - see IlGenerator.TryEmitBackingFieldRead.
-                    if (field.Name.EndsWith(">k__BackingField", StringComparison.Ordinal))
-                        continue;
-
-                    if (Sanitize(field.Name) is { } fieldName)
+                    if (BackingFields && Sanitize(field.Name) is { } fieldName)
                         field.OverrideName = Unique(fieldName, taken);
-                }
             }
 
             progressCallback?.Invoke(++done, appContext.Assemblies.Count);

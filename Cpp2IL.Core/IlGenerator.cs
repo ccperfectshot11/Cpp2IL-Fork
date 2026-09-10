@@ -35,6 +35,12 @@ public static class IlGenerator
     // Casts an untyped local to what the use site expects. On by default (CPP2IL_CAST_UNTYPED=0 disables).
     private static readonly bool CastUntypedLocals = Environment.GetEnvironmentVariable("CPP2IL_CAST_UNTYPED") != "0";
 
+    // Pushes null rather than a native zero where a reference is expected. Off pending measurement.
+    private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") == "1";
+
+    // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
+    private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";
+
     // Reads a backing field owned by another type through its property. On by default (CPP2IL_BACKING_PROP=0).
     private static readonly bool RouteBackingFields = Environment.GetEnvironmentVariable("CPP2IL_BACKING_PROP") != "0";
 
@@ -500,6 +506,19 @@ public static class IlGenerator
         return false;
     }
 
+    // The type one side of a comparison should be loaded as, read off the other side. Null when the other
+    // side carries no type either, which leaves the caller to pick a default.
+    private static TypeAnalysisContext? ComparisonOperandType(Instruction instruction, int otherIndex, MethodAnalysisContext context)
+        => instruction.Operands[otherIndex] switch
+        {
+            LocalVariable { Type: { } type } => type,
+            FieldReference field => field.ResultType,
+            StringLiteral => context.AppContext.SystemTypes.SystemStringType,
+            FloatLiteral => context.AppContext.SystemTypes.SystemSingleType,
+            DoubleLiteral => context.AppContext.SystemTypes.SystemDoubleType,
+            _ => null,
+        };
+
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
     private static string Diagnostic(string message) 
         => message.Length <= 250 ? message : message[..250] + "…";
@@ -851,21 +870,40 @@ public static class IlGenerator
                 // loader so is what lets an unrecovered value be pushed at the right width and an untyped
                 // local be cast instead of staying `object`. Only for arithmetic: a comparison's result is
                 // bool, which says nothing at all about the two things being compared.
-                var operandType = instruction.OpCode is >= OpCode.CheckEqual and <= OpCode.CheckLessOrEqual
-                    ? null
-                    : DestinationType(instruction.Operands[0]);
+                var isComparison = instruction.OpCode is >= OpCode.CheckEqual and <= OpCode.CheckLessOrEqual;
+
+                // A comparison's result is bool, which says nothing about the two things being compared, so
+                // each side takes its expected type from the other instead. Where neither side knows, an
+                // int: two unrecovered values compared as native ints decompile to
+                // `(IntPtr)0 >= (IntPtr)0`, which is 803 methods of CS0019 for a comparison that is
+                // meaningless either way - as ints it at least compiles.
+                // MEASURED HARMFUL, off by default (CPP2IL_CMP_TYPES=1 to retry): typing each side of a
+                // comparison from the other cost 251 strict methods. Marker-free strict rose, so it does fix
+                // the `(IntPtr)0 >= (IntPtr)0` shape - but forcing a type onto a comparison whose operands
+                // are genuinely unknown breaks more methods elsewhere than it repairs.
+                var leftType = !isComparison
+                    ? DestinationType(instruction.Operands[0])
+                    : ComparisonTypes
+                        ? ComparisonOperandType(instruction, 2, context) ?? context.AppContext.SystemTypes.SystemInt32Type
+                        : null;
+                var operandType = leftType;
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 1, instructions))
                 {
-                    LoadOperand(instruction.Operands[1], method, locals, writeLine, operandType);
+                    LoadOperand(instruction.Operands[1], method, locals, writeLine, leftType);
                     if (floatConversion is { } conv1)
                         instructions.Add(conv1);
                 }
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
                 {
-                    // A shift's second operand is the shift count, always an int32, never the result type.
-                    var rightType = instruction.OpCode is OpCode.ShiftLeft or OpCode.ShiftRight ? null : operandType;
+                    var rightType = instruction.OpCode switch
+                    {
+                        // A shift's second operand is the count, always an int32, never the result type.
+                        OpCode.ShiftLeft or OpCode.ShiftRight => null,
+                        _ when isComparison => ComparisonTypes ? ComparisonOperandType(instruction, 1, context) ?? leftType : null,
+                        _ => operandType,
+                    };
 
                     LoadOperand(instruction.Operands[2], method, locals, writeLine, rightType);
                     if (floatConversion is { } conv2)
@@ -1095,6 +1133,18 @@ public static class IlGenerator
     // arithmetic around it stays writable.
     private static void PushPlaceholderZero(TypeAnalysisContext? expectedType, CilInstructionCollection instructions)
     {
+        // A reference is compared and assigned as a reference, so its stand-in has to be null; a native zero
+        // there is the same CS0019 in a different disguise. The synthetic il2cpp types are excluded: they
+        // are not value types either, but each one IS a pointer and is emitted as one.
+        if (PlaceholderNull && expectedType is { IsValueType: false } and not (RuntimeClassTypeAnalysisContext
+            or RgctxTableTypeAnalysisContext or MethodRgctxTableTypeAnalysisContext
+            or StaticFieldStorageTypeAnalysisContext or RuntimeMethodInfoAnalysisContext
+            or RuntimeFieldInfoAnalysisContext or ByRefTypeAnalysisContext))
+        {
+            instructions.Add(CilOpCodes.Ldnull);
+            return;
+        }
+
         instructions.Add(CilOpCodes.Ldc_I4_0);
 
         switch (expectedType?.FullName)
@@ -1113,7 +1163,7 @@ public static class IlGenerator
                 instructions.Add(CilOpCodes.Conv_R8);
                 return;
             default:
-                // A pointer, a reference, or nothing known - keep the native int this has always been.
+                // A pointer, or nothing known - keep the native int this has always been.
                 instructions.Add(CilOpCodes.Conv_I);
                 return;
         }
