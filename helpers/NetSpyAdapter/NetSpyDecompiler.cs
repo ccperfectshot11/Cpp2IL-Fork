@@ -112,6 +112,23 @@ namespace NetSpyAdapter
         private static readonly Regex InjectedAttrClass =
             new Regex(@"(?m)^([ \t]*)(public\s+(?:sealed\s+)?class\s+\w+\s*:\s*Attribute\b)", RegexOptions.Compiled);
 
+        // Cpp2IL's ConditionalJump pushes its condition and then branches on it. Where the branch target
+        // cannot be resolved, IlGenerator rewrites the brtrue to a nop ("Branch target not in ISIL to IL
+        // map") but leaves the push, so the condition is orphaned; NetSpy renders a popped value as the
+        // expression itself (AstMethodBodyBuilder, `case ILCode.Pop: return arg1;`) and it lands as a
+        // statement that is only a name - `flag7;` directly under the `flag7 = this._root == null;` that
+        // produced it. That is CS0201, 1,301 errors over 360 methods and the biggest message shape left;
+        // all 1,344 of these lines are one of ILSpy's generated bool locals, 98.6% under their own
+        // assignment. Dropping the statement cannot change behaviour: an unqualified simple name here is
+        // only ever a local or a parameter (NetSpy writes `this.`/the declaring type in front of fields and
+        // properties), so there is nothing to evaluate, and the assignment above keeps the comparison the
+        // native code really made. The keyword exclusions are load-bearing - `return;`, `break;`,
+        // `continue;` and `throw;` are the only other statements with this one-word shape.
+        private static readonly bool DropBareLocalStatements = Environment.GetEnvironmentVariable("CPP2IL_BARE_LOCAL") != "0";
+        private static readonly Regex BareLocalStatement = new Regex(
+            @"(?m)^[ \t]*(?!return\b|break\b|continue\b|throw\b|goto\b|yield\b)[a-z_][A-Za-z0-9_]*[ \t]*;[ \t]*\r?\n",
+            RegexOptions.Compiled);
+
         private static string SanitizeInvalidConstructs(string code)
         {
             if (string.IsNullOrEmpty(code))
@@ -134,6 +151,10 @@ namespace NetSpyAdapter
             //    permissive one so multiple applications on one member don't become CS0579.
             if (code.Contains("namespace Cpp2ILInjected") && code.Contains(": Attribute") && !code.Contains("AttributeUsage"))
                 code = InjectedAttrClass.Replace(code, "$1[AttributeUsage(AttributeTargets.All, AllowMultiple = true)]\r\n$1$2", 1);
+            // 6) A statement that is only a local's name is the sibling of (1): a value the decompiler
+            //    had nowhere to put. Reading a local has no side effects, so drop the whole line.
+            if (DropBareLocalStatements)
+                code = BareLocalStatement.Replace(code, string.Empty);
             return code;
         }
 
