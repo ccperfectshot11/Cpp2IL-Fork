@@ -467,6 +467,13 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, 
 
         LocalVariables.TypeAddressedLocals(this);
 
+        // Every consumer of a runtime handle has now had its chance at the read: CastRecovery matched
+        // against it, and both rounds of copy propagation have had the option of forwarding it into the
+        // uses that can lower it (an [obj + 0] reaching a System.Type argument becomes obj.GetType()).
+        // What is left is a store of an il2cpp pointer into a slot that has no managed value, which the
+        // generator can only get wrong, so it goes.
+        RuntimeHandleReadRemover.Run(this);
+
         ConstantBranchFolder.Run(this);
 
         // Near-last, as it depends on the final block layout
