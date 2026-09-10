@@ -25,7 +25,19 @@ if (Test-Path $log) { Remove-Item $log -Force -ErrorAction SilentlyContinue }
 
 Write-Host "pornesc jocul cu maturarea automata..."
 $env:CPP2IL_VERIFY_AUTO = "1"
-$game = Start-Process -FilePath $exe -WorkingDirectory $Game -PassThru
+# Start-Process -PassThru comes back empty for this executable - the launcher re-execs - so the process
+# is found by name afterwards instead.
+$before = @(Get-Process -Name "StumblePeak" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+Start-Process -FilePath $exe -WorkingDirectory $Game | Out-Null
+
+$gameId = $null
+foreach ($i in 1..30) {
+    Start-Sleep -Seconds 1
+    $now = @(Get-Process -Name "StumblePeak" -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+    if ($now.Count -gt 0) { $gameId = $now[0].Id; break }
+}
+
+if (-not $gameId) { Write-Host "nu am gasit procesul jocului dupa pornire." -ForegroundColor Yellow }
 
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $lastSize = 0
@@ -34,7 +46,7 @@ while ((Get-Date) -lt $deadline) {
     if (Test-Path $phase2) { break }
 
     # The game exiting before the file appears means the sweep died with it - there is nothing to wait for.
-    if ($game.HasExited -and -not (Test-Path $phase2)) {
+    if ($gameId -and -not (Get-Process -Id $gameId -ErrorAction SilentlyContinue) -and -not (Test-Path $phase2)) {
         Write-Host "jocul s-a inchis fara sa scrie rezultatul." -ForegroundColor Yellow
         break
     }
@@ -50,7 +62,8 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 5
 }
 
-if (-not $game.HasExited) { Write-Host "inchid jocul..."; $game.Kill(); $game.WaitForExit(10000) }
+$still = if ($gameId) { Get-Process -Id $gameId -ErrorAction SilentlyContinue } else { $null }
+if ($still) { Write-Host "inchid jocul..."; $still.Kill(); $still.WaitForExit(10000) }
 
 Write-Host ""
 if (Test-Path $phase2) {

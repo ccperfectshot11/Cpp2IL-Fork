@@ -115,6 +115,7 @@ public class VerifyMod : MelonMod
         }
 
         var results = new List<MethodFuzzResult>();
+        var missesByReason = new Dictionary<string, int>(StringComparer.Ordinal);
         var resolved = 0;
         var missing = 0;
 
@@ -123,6 +124,7 @@ public class VerifyMod : MelonMod
             if (!index.TryGetValue(key, out var method))
             {
                 missing++;
+                RecordMiss(key, index, missesByReason);
                 continue;
             }
 
@@ -164,6 +166,9 @@ public class VerifyMod : MelonMod
             SignatureJson.Write(writer, SignatureJson.PhaseNative, "in-game", request.Plan, results);
 
         LoggerInstance.Msg($"Resolved {resolved}, could not find {missing}. Wrote {results.Count} signatures to {outputPath}.");
+
+        foreach (var reason in missesByReason.OrderByDescending(r => r.Value))
+            LoggerInstance.Msg($"  miss: {reason.Value,5}  {reason.Key}");
         LoggerInstance.Msg("Compare with: Cpp2IL.VerifyCheck --compare phase1.json phase2.json");
 
         // A scripted run has to end by itself, or the harness would wait for a window nobody is going to
@@ -255,6 +260,46 @@ public class VerifyMod : MelonMod
         }
 
         LoggerInstance.Msg($"Loaded {loaded} interop assemblies before indexing.");
+    }
+
+    /// <summary>
+    /// Says WHY a key did not resolve, which is the difference between a fixable normalisation bug and a
+    /// method the running build genuinely does not have. Guessing at this cost two wrong hypotheses
+    /// already: first that the keys were shaped differently, then that the assemblies had not loaded -
+    /// both were wrong, and the index size did not move when the second was "fixed".
+    /// </summary>
+    private static void RecordMiss(string key, Dictionary<string, MethodBase> index, Dictionary<string, int> reasons)
+    {
+        var typeName = key.Substring(0, key.IndexOf("::", StringComparison.Ordinal));
+        var methodName = key.Substring(typeName.Length + 2);
+        methodName = methodName.Substring(0, methodName.IndexOf('('));
+
+        var typePrefix = typeName + "::";
+        var typeIndexed = false;
+        var methodIndexed = false;
+
+        foreach (var indexed in index.Keys)
+        {
+            if (!indexed.StartsWith(typePrefix, StringComparison.Ordinal))
+                continue;
+
+            typeIndexed = true;
+
+            if (indexed.StartsWith(typePrefix + methodName + "(", StringComparison.Ordinal))
+            {
+                methodIndexed = true;
+                break;
+            }
+        }
+
+        var reason = methodIndexed
+            ? "type and method are there - the signature differs"
+            : typeIndexed
+                ? "type is there, method is not"
+                : "type is not in the index at all";
+
+        reasons.TryGetValue(reason, out var count);
+        reasons[reason] = count + 1;
     }
 
     private static void IndexType(Type type, Dictionary<string, MethodBase> index)
