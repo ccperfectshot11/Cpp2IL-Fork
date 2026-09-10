@@ -176,6 +176,13 @@ internal static class Program
         // single bad method means the run never finishes, no matter how many times it is started.
         _journalPath = outPath + ".inflight";
         var skipPath = outPath + ".skip";
+
+        // Results were only written at the very end, so every access violation - and there are dozens
+        // across the whole directory - threw away the entire run's work. That makes a full pass quadratic:
+        // 28 crashers means 28 runs, each redoing everything before it. Written as they complete, a restart
+        // resumes instead of restarting, and the pass is linear.
+        var resumePath = outPath + ".partial";
+        var completed = LoadCompleted(resumePath);
         var skip = File.Exists(skipPath)
             ? new HashSet<string>(File.ReadAllLines(skipPath).Where(l => l.Length > 0), StringComparer.Ordinal)
             : new HashSet<string>(StringComparer.Ordinal);
@@ -202,6 +209,12 @@ internal static class Program
             var identity = candidate.AssemblyName + "::" + candidate.TypeName + "::" + candidate.MethodName + " (0x" + candidate.Token.ToString("X8") + ")";
             if (skip.Contains(identity))
                 continue;
+
+            if (completed.TryGetValue(identity, out var alreadyDone))
+            {
+                results.Add(alreadyDone);
+                continue;
+            }
 
             if (done % 200 == 0)
                 Console.Error.WriteLine($"[{done}/{todo.Count}] {candidate.TypeName}::{candidate.MethodName}");
@@ -253,12 +266,46 @@ internal static class Program
                 result.Type = candidate.TypeName;
 
             results.Add(result);
+            AppendCompleted(resumePath, identity, result);
         }
 
         if (File.Exists(_journalPath))
             File.Delete(_journalPath);
 
         return results;
+    }
+
+    // One JSON object per line, flushed per method. Not the final file's format - that one is a single
+    // document and cannot be appended to - and it is deleted once the run completes.
+    private static void AppendCompleted(string path, string identity, MethodFuzzResult result)
+    {
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        using var writer = new StreamWriter(stream);
+
+        writer.WriteLine(identity + "	" + SignatureJson.WriteResultLine(result));
+    }
+
+    private static Dictionary<string, MethodFuzzResult> LoadCompleted(string path)
+    {
+        var completed = new Dictionary<string, MethodFuzzResult>(StringComparer.Ordinal);
+
+        if (!File.Exists(path))
+            return completed;
+
+        foreach (var line in File.ReadAllLines(path))
+        {
+            var tab = line.IndexOf('	');
+
+            // A line cut in half by the process dying mid-write is simply not resumable; the method runs
+            // again, which is the same cost as not having the file at all for that one entry.
+            if (tab <= 0 || SignatureJson.ReadResultLine(line.Substring(tab + 1)) is not { } result)
+                continue;
+
+            completed[line.Substring(0, tab)] = result;
+        }
+
+        Console.Error.WriteLine($"[resume] {completed.Count} methods already done");
+        return completed;
     }
 
     // .NET has no way to stop a thread that will not stop: Thread.Abort throws PlatformNotSupported on

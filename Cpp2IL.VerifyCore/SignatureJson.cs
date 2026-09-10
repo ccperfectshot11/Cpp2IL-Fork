@@ -67,6 +67,75 @@ public static class SignatureJson
         writer.WriteLine("}");
     }
 
+
+    // A single result on one line, for the partial-results file a run appends to as it goes. Deliberately
+    // not the document format above: that one is a whole JSON object and cannot be appended to, and this
+    // one has to survive the process being killed mid-write, so each line stands alone. Tab-separated
+    // rather than JSON because the reader is this file too, and a field split is enough.
+    public static string WriteResultLine(MethodFuzzResult result)
+    {
+        var fields = new[]
+        {
+            result.Key, result.Assembly, result.Type, result.Method, result.Token,
+            result.Signature, result.SecondPassSignature, result.Failure,
+            result.Supported ? "1" : "0",
+            result.ReadsStatics ? "1" : "0",
+            result.NonDeterministic ? "1" : "0",
+            result.AllThrew ? "1" : "0",
+            result.ConstantOutput ? "1" : "0",
+            result.EdgeIterations.ToString(CultureInfo.InvariantCulture),
+            result.RandomIterations.ToString(CultureInfo.InvariantCulture),
+            result.ThrewCount.ToString(CultureInfo.InvariantCulture),
+            result.AbortedAfter.ToString(CultureInfo.InvariantCulture),
+            result.ElapsedMs.ToString(CultureInfo.InvariantCulture),
+            string.Join("|", result.ExceptionKinds ?? new List<string>()),
+        };
+
+        var line = new StringBuilder();
+
+        foreach (var field in fields)
+        {
+            if (line.Length > 0)
+                line.Append('\u001f');
+
+            // A failure message can contain anything, newlines included, and one of those would split the
+            // line in two and make every field after it land in the wrong column on resume.
+            line.Append((field ?? "").Replace("\r", " ").Replace("\n", " ").Replace("\u001f", " "));
+        }
+
+        return line.ToString();
+    }
+
+    public static MethodFuzzResult ReadResultLine(string line)
+    {
+        var fields = line.Split('\u001f');
+
+        if (fields.Length < 19)
+            return null;
+
+        return new MethodFuzzResult
+        {
+            Key = fields[0], Assembly = fields[1], Type = fields[2], Method = fields[3], Token = fields[4],
+            Signature = Blank(fields[5]), SecondPassSignature = Blank(fields[6]), Failure = Blank(fields[7]),
+            Supported = fields[8] == "1",
+            ReadsStatics = fields[9] == "1",
+            NonDeterministic = fields[10] == "1",
+            AllThrew = fields[11] == "1",
+            ConstantOutput = fields[12] == "1",
+            EdgeIterations = int.Parse(fields[13], CultureInfo.InvariantCulture),
+            RandomIterations = int.Parse(fields[14], CultureInfo.InvariantCulture),
+            ThrewCount = int.Parse(fields[15], CultureInfo.InvariantCulture),
+            AbortedAfter = int.Parse(fields[16], CultureInfo.InvariantCulture),
+            ElapsedMs = long.Parse(fields[17], CultureInfo.InvariantCulture),
+            ExceptionKinds = fields[18].Length == 0
+                ? new List<string>()
+                : new List<string>(fields[18].Split('|')),
+        };
+    }
+
+    // An empty column and a null field are the same thing here; keeping them distinct would only make the
+    // resumed result differ from the original for no observable reason.
+    private static string Blank(string value) => value.Length == 0 ? null : value;
     private static string Quote(string value)
     {
         if (value == null)
