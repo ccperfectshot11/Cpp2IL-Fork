@@ -18,9 +18,13 @@ public static class MetadataInitGuardRemover
     private const string ClassInitActual = "il2cpp_runtime_class_init_actual";
     private const string ClassInitCodegen = "il2cpp_codegen_runtime_class_init";
 
-    // Byte holding Il2CppClass's bitfield, of which bit 0 is initialized_and_no_error.
-    // TODO this is almost certainly not correct on every version... but which?
-    private const long InitialisedFlagOffset64 = 0x135;
+    // Byte holding Il2CppClass's bitfield, of which bit 0 is initialized_and_no_error. This used to be
+    // 0x135 with a TODO saying it was almost certainly wrong, and it was: CPP2IL_METADIAG counts every read
+    // off a class pointer in this build, and 0x132 is read 5,240 times while 0x135 is never read at all.
+    // 0x132 is also what Il2CppClassUsefulOffsets independently lists as flags1, laid out from
+    // interface_offsets_count at 0x12A. With the wrong offset the guard never matched, so it survived into
+    // the output as `num = (int)((IntPtr)0 & 1); if (num == 0) throw null;` - 194 occurrences.
+    private const long InitialisedFlagOffset64 = 0x132;
     private const long InitialisedFlagOffset32 = 0xBD;
 
     // Offset of MethodInfo::rgctx_data
