@@ -397,6 +397,15 @@ public static class IlGenerator
                 if (ilLocal.VariableType is ByReferenceTypeSignature)
                     continue;
 
+                // Nor a native int. `initobj System.IntPtr` is legal IL, but the decompiler renders it as
+                // `IntPtr x = 0;` and C# has no implicit int-to-IntPtr conversion, so it does not compile -
+                // 5,887 occurrences of that one line. The zeroing was never needed anyway: the body sets
+                // InitializeLocals, so the runtime has already done it, and this whole pass exists only to
+                // convince the C# compiler's definite-assignment check, which a native int does not need.
+                if (ilLocal.VariableType is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I
+                    or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U })
+                    continue;
+
                 localInitialisation.Add(new CilInstruction(CilOpCodes.Ldloca, ilLocal));
                 localInitialisation.Add(new CilInstruction(CilOpCodes.Initobj, ilLocal.VariableType.ToTypeDefOrRef()));
             }
@@ -501,8 +510,11 @@ public static class IlGenerator
 
         EmitLocalInitialisation(body, localInitialisation);
 
-        // Body-wide rather than per instruction, because the box and the unbox that have to agree about an
-        // untyped local are emitted at unrelated sites and neither can see the other.
+        // Both body-wide rather than per instruction, because the box and the unbox that have to agree
+        // about an untyped local are emitted at unrelated sites and neither can see the other. The order
+        // is what makes the first one safe: it asks for the arithmetic's common type, and the second
+        // retargets each of those unboxes at the box that actually filled the local.
+        Analysis.StackCoercion.UnboxArithmeticOperands(body);
         Analysis.StackCoercion.AgreeWithBox(body);
 
         // The method header declares how deep the evaluation stack goes, and the runtime rejects the whole

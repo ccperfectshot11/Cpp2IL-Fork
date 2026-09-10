@@ -17,6 +17,7 @@ using NetSpyAdapter;
 // thread so one pathological assembly can't abort the whole measurement.
 internal static class Program
 {
+    private static string _referenceDirectory;
     private static long types, decompFail, withNativeMethod, withMarker, withGoto, clean;
     private static bool _write;
     private static string _outDir;
@@ -30,6 +31,7 @@ internal static class Program
         }
 
         var dllDir = args[0];
+        _referenceDirectory = Path.GetFullPath(dllDir);
         _outDir = args[1];
         var filter = args.Length > 2 ? args[2] : null;
         _write = _outDir != "-";
@@ -97,7 +99,7 @@ internal static class Program
                 if (marker) Interlocked.Increment(ref withMarker);
                 if (gotoo) Interlocked.Increment(ref withGoto);
                 if (!failed && !nativ && !marker && !gotoo) Interlocked.Increment(ref clean);
-            });
+            }, _referenceDirectory);
         }
         catch (Exception e)
         {

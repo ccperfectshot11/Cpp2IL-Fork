@@ -41,6 +41,13 @@ public static class StackCoercion
     // switch with the emitter's half of the same repair (CPP2IL_NINT_ARITH=0 disables both).
     private static readonly bool NativeArithmeticAsInt64 = Environment.GetEnvironmentVariable("CPP2IL_NINT_ARITH") != "0";
 
+    // Unboxes the operands of an arithmetic opcode fed by two untyped locals (CPP2IL_OBJ_ARITH=0 disables).
+    private static readonly bool UntypedArithmetic = Environment.GetEnvironmentVariable("CPP2IL_OBJ_ARITH") != "0";
+
+    // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
+    // body that keeps finding work is looping over something unexpected rather than converging.
+    private const int UntypedArithmeticRounds = 4;
+
     /// <summary>
     /// What the evaluation stack actually distinguishes. Narrower integers do not appear: bool, char and
     /// everything below int32 all arrive as int32, which is why storing an int32 into a byte field needs no
@@ -113,23 +120,7 @@ public static class StackCoercion
             return;
 
         var instructions = body.Instructions;
-        var boxedAs = new Dictionary<CilLocalVariable, TypeSignature?>();
-
-        for (var i = 0; i + 1 < instructions.Count; i++)
-        {
-            if (instructions[i].OpCode.Code != CilCode.Box || !instructions[i + 1].IsStloc())
-                continue;
-
-            if (UntypedLocal(body, instructions[i + 1]) is not { } local)
-                continue;
-
-            var stored = OperandType(instructions[i], body);
-
-            if (boxedAs.TryGetValue(local, out var already))
-                boxedAs[local] = already?.FullName == stored?.FullName ? already : null;
-            else
-                boxedAs[local] = stored;
-        }
+        var boxedAs = BoxedInto(body);
 
         for (var i = instructions.Count - 2; i >= 0; i--)
         {
@@ -157,6 +148,179 @@ public static class StackCoercion
         => instruction.GetLocalVariable(body.LocalVariables) is { VariableType.ElementType: ElementType.Object } local
             ? local
             : null;
+
+    /// <summary>
+    /// What each untyped local was boxed as, by the one statement of type that cannot be wrong: the box
+    /// names a value that was really on the stack. A local boxed as two different types on different paths
+    /// maps to null - there is no single answer for it.
+    /// </summary>
+    private static Dictionary<CilLocalVariable, TypeSignature?> BoxedInto(CilMethodBody body)
+    {
+        var instructions = body.Instructions;
+        var boxedAs = new Dictionary<CilLocalVariable, TypeSignature?>();
+
+        for (var i = 0; i + 1 < instructions.Count; i++)
+        {
+            if (instructions[i].OpCode.Code != CilCode.Box || !instructions[i + 1].IsStloc())
+                continue;
+
+            if (UntypedLocal(body, instructions[i + 1]) is not { } local)
+                continue;
+
+            var stored = OperandType(instructions[i], body);
+
+            if (boxedAs.TryGetValue(local, out var already))
+                boxedAs[local] = already?.FullName == stored?.FullName ? already : null;
+            else
+                boxedAs[local] = stored;
+        }
+
+        return boxedAs;
+    }
+
+    /// <summary>
+    /// Unboxes the operands of an arithmetic opcode that reached it as untyped locals.
+    ///
+    /// il2cpp kept a number in a register; the inference never typed the local that register became, so it
+    /// is declared object and the value is boxed on the way in. Where the use site is typed, emission
+    /// unboxes on the way out - but at an arithmetic opcode fed by two such locals there is no typed side
+    /// to ask, so both arrive as raw object references. add on two object references is not IL at all, and
+    /// what it decompiles to is `obj + obj`, which is not C# either: 784 sites across the two
+    /// Assembly-CSharp assemblies, add and mul the most of them.
+    ///
+    /// The box is what the local really holds, exactly as in <see cref="AgreeWithBox"/>, and one side
+    /// naming a primitive is enough - the existing rule for an object meeting a number already says the
+    /// other side names what to unbox to. Nothing is invented where neither side was ever boxed.
+    ///
+    /// Running in front of <see cref="AgreeWithBox"/> is what makes the pair emitted here safe: unbox.any
+    /// demands the exact boxed type, and where the two operands were boxed as different widths the type
+    /// asked for here is only the arithmetic's common one. AgreeWithBox then retargets each unbox at its
+    /// own box and converts from there, so the widening happens after the value is off the heap.
+    /// </summary>
+    public static void UnboxArithmeticOperands(CilMethodBody body)
+    {
+        if (!Enabled || !UntypedArithmetic)
+            return;
+
+        // Each rewrite boxes its own result into the local the result is stored in, which is a new true
+        // statement about that local - and the operand a later site could not type is regularly exactly
+        // that local. So the pass is repeated while it keeps finding work, rather than once.
+        for (var round = 0; round < UntypedArithmeticRounds && UnboxArithmeticOperandsOnce(body); round++)
+        {
+        }
+    }
+
+    private static bool UnboxArithmeticOperandsOnce(CilMethodBody body)
+    {
+        var instructions = body.Instructions;
+        var boxedAs = BoxedInto(body);
+
+        if (boxedAs.Count == 0)
+            return false;
+
+        var factory = Module(body).CorLibTypeFactory;
+        var edits = new List<Edit>();
+
+        for (var i = 2; i < instructions.Count; i++)
+        {
+            var code = instructions[i].OpCode.Code;
+
+            if (!IsUntypedArithmetic(code, out var comparison, out var integerOnly))
+                continue;
+
+            if (!instructions[i - 2].IsLdloc() || !instructions[i - 1].IsLdloc()
+                || UntypedLocal(body, instructions[i - 2]) is not { } left
+                || UntypedLocal(body, instructions[i - 1]) is not { } right)
+                continue;
+
+            boxedAs.TryGetValue(left, out var leftBoxed);
+            boxedAs.TryGetValue(right, out var rightBoxed);
+
+            if (CommonBoxedType(leftBoxed, rightBoxed, factory, integerOnly) is not { } target)
+                continue;
+
+            // A comparison answers with a bool whatever went into it, so only the operands move. Arithmetic
+            // now produces a number where an object reference used to be stored, and the slot it is stored
+            // into is still declared object - so it is boxed back, which is also what makes the local
+            // readable as the number it holds on the next round.
+            var box = new List<CilInstruction>();
+
+            if (!comparison)
+            {
+                if (i + 1 >= instructions.Count || !instructions[i + 1].IsStloc()
+                    || UntypedLocal(body, instructions[i + 1]) == null)
+                    continue;
+
+                box.Add(new CilInstruction(CilOpCodes.Box, target.ToTypeDefOrRef()));
+            }
+
+            var unbox = target.ToTypeDefOrRef();
+
+            edits.Add(new Edit(i - 1, edits.Count, [new CilInstruction(CilOpCodes.Unbox_Any, unbox)]));
+            edits.Add(new Edit(i, edits.Count, [new CilInstruction(CilOpCodes.Unbox_Any, unbox)]));
+
+            if (box.Count > 0)
+                edits.Add(new Edit(i + 1, edits.Count, box));
+        }
+
+        if (edits.Count == 0)
+            return false;
+
+        edits.Sort((a, b) => a.At != b.At ? b.At.CompareTo(a.At) : b.Order.CompareTo(a.Order));
+
+        foreach (var edit in edits)
+            instructions.InsertRange(edit.At, edit.Bridge);
+
+        return true;
+    }
+
+    /// <summary>
+    /// The opcodes C# has no form of at all for object, which is what makes an untyped operand here a
+    /// defect rather than a reference comparison. ceq is deliberately absent: `a == b` on two references
+    /// is legal C# and legal IL, so nothing there says the values are not references.
+    /// </summary>
+    private static bool IsUntypedArithmetic(CilCode code, out bool comparison, out bool integerOnly)
+    {
+        comparison = code is CilCode.Cgt or CilCode.Cgt_Un or CilCode.Clt or CilCode.Clt_Un;
+        integerOnly = code is CilCode.And or CilCode.Or or CilCode.Xor or CilCode.Div_Un or CilCode.Rem_Un;
+
+        return code is CilCode.Add or CilCode.Sub or CilCode.Mul or CilCode.Div or CilCode.Div_Un
+            or CilCode.Rem or CilCode.Rem_Un or CilCode.And or CilCode.Or or CilCode.Xor
+            or CilCode.Cgt or CilCode.Cgt_Un or CilCode.Clt or CilCode.Clt_Un;
+    }
+
+    /// <summary>
+    /// The one type both operands are brought to, from whichever of them a box named. Reconciling two
+    /// different widths is the same decision <see cref="CommonOperandType"/> already makes, so it makes it
+    /// here too, with an unboxed side standing in as the reference it currently is.
+    /// </summary>
+    private static TypeSignature? CommonBoxedType(TypeSignature? left, TypeSignature? right,
+        CorLibTypeFactory factory, bool integerOnly)
+    {
+        if (left == null && right == null)
+            return null;
+
+        var known = left ?? right!;
+        var target = left != null && right != null
+            ? CommonOperandType(new Value(left, KindOf(left), 0), new Value(right, KindOf(right), 0),
+                  factory, integerOnly, NativeArithmeticAsInt64) ?? known
+            : known;
+
+        // Same reason as everywhere else: two native ints verify, but C# cannot spell an operator on
+        // IntPtr, so the value the recovered method has to read as is int64. Unlike the emitter's half,
+        // that holds for the comparisons here too - `IntPtr < IntPtr` is a C# error just as loudly as
+        // `IntPtr + IntPtr`, and a pass whose whole purpose is producing code that compiles has no reason
+        // to leave the one shape it can spell for the one it cannot.
+        if (KindOf(target) == Kind.Native && NativeArithmeticAsInt64)
+            target = factory.Int64;
+
+        return KindOf(target) switch
+        {
+            Kind.Int32 or Kind.Int64 or Kind.Native => target,
+            Kind.Float => integerOnly ? null : target,
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Models one instruction's effect on the abstract stack, coercing the values it consumes on the way.

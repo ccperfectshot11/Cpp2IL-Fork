@@ -21,6 +21,7 @@ using NetSpyAdapter;
 internal static class Program
 {
     private static string[] _allDlls;
+    private static string _referenceDirectory;
     private static readonly Dictionary<string, MetadataReference> _refCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly bool ExcludeSelf = Environment.GetEnvironmentVariable("CPP2IL_CC_EXCLUDE_SELF") == "1";
 
@@ -52,6 +53,7 @@ internal static class Program
         }
 
         var dllDir = args[0];
+        _referenceDirectory = Path.GetFullPath(dllDir);
         var filter = args.Length > 1 ? args[1] : null;
         _allDlls = Directory.GetFiles(dllDir, "*.dll", SearchOption.TopDirectoryOnly).OrderBy(p => p).ToArray();
 
@@ -179,7 +181,7 @@ internal static class Program
 
                 batch.Add(CSharpSyntaxTree.ParseText(code, ParseOpts, path: rel));
                 if (batch.Count >= BatchSize) Flush();
-            });
+            }, _referenceDirectory);
             Flush();
         }
         catch (Exception ex)

@@ -2111,6 +2111,16 @@ namespace ICSharpCode.Decompiler.Ast {
 			astField.Modifiers = ConvertModifiers(fieldDef);
 			if (TryGetConstant(fieldDef, out var constant)) {
 				initializer.Initializer = CreateExpressionForConstant(constant, fieldDef.FieldType, stringBuilder, fieldDef.DeclaringType.IsEnum);
+				// Same unresolved-enum hole as in the attribute arguments: with no assembly resolver an enum
+				// declared elsewhere does not Resolve(), so MakePrimitive gives up on the member names and leaves
+				// a bare int - "const BindingFlags DefaultBindingFlags = 60;" is CS0266 on a field, which is a
+				// class-level error and takes the type's 36 methods with it. Only const is cast: C# allows const
+				// on primitives, string and enums only, so an unresolved const type IS an enum and the cast is a
+				// language rule rather than a guess. A plain field with a constant has no such guarantee - Cpp2IL
+				// recovers "Vector3 _targetOffset = 0" too, where a cast would just trade CS0029 for CS0030.
+				if (UnresolvedEnumCasts && fieldDef.IsLiteral && !fieldDef.DeclaringType.IsEnum &&
+					initializer.Initializer is PrimitiveExpression && IsUnresolvedEnumLikeType(fieldDef.FieldType))
+					initializer.Initializer = new CastExpression(ConvertType(fieldDef.FieldType, stringBuilder, fieldDef), initializer.Initializer.Detach());
 			}
 			ConvertAttributes(Context.MetadataTextColorProvider, astField, fieldDef, context.Settings, stringBuilder);
 			if (fieldDef.DeclaringType != null && IsStubbableIterator(fieldDef.DeclaringType))
@@ -2197,6 +2207,8 @@ namespace ICSharpCode.Decompiler.Ast {
 			}
 			return TypeCode.Empty;
 		}
+
+		static readonly bool UnresolvedEnumCasts = Environment.GetEnvironmentVariable("CPP2IL_ENUM_CAST") != "0";
 
 		// NetSpy: true when an integer default parameter's type is (or is likely) an enum whose
 		// definition can't be resolved, so a bare integer literal would be an invalid enum default.
@@ -2397,6 +2409,38 @@ namespace ICSharpCode.Decompiler.Ast {
 		static readonly UTF8String isReadOnlyAttributeString = new UTF8String("IsReadOnlyAttribute");
 		static readonly UTF8String isByRefLikeAttributeString = new UTF8String("IsByRefLikeAttribute");
 		static readonly UTF8String obsoleteAttributeString = new UTF8String("ObsoleteAttribute");
+
+		// Roslyn owns a handful of attributes outright: it synthesises them itself and refuses the source that
+		// writes them - CS8138 for TupleElementNames, CS8623 for Nullable, CS8335 for NullableContext /
+		// NativeInteger / IsReadOnly / IsUnmanaged / RequiresLocation, CS1970 for Dynamic. None of them carries
+		// anything a recompile needs: the tuple element names, the nullable annotations and the readonly/unmanaged
+		// markers are all re-derived from the syntax. Resolving them is not an option either - Roslyn hides a type
+		// marked [Microsoft.CodeAnalysis.Embedded] from every assembly but its own, so the Nullable pair that
+		// Assembly-CSharp does declare still reads as CS0234 from a sibling batch, and IL2CPP stripped the rest.
+		// Emitting one is therefore an error whatever the reference set holds, and an error on a member
+		// declaration is class-level: it takes down every method in the type, not just its own line.
+		// Contrast [StructLayout] and [MethodImpl], equally unresolvable here but carrying real semantics
+		// (layout/size, inlining) - those want their attribute type injected, not the attribute dropped.
+		static readonly bool DropReservedAttributes = Environment.GetEnvironmentVariable("CPP2IL_DROP_RESERVED_ATTRS") != "0";
+		static readonly UTF8String tupleElementNamesAttributeString = new UTF8String("TupleElementNamesAttribute");
+		static readonly UTF8String nullableAttributeString = new UTF8String("NullableAttribute");
+		static readonly UTF8String nullableContextAttributeString = new UTF8String("NullableContextAttribute");
+		static readonly UTF8String nativeIntegerAttributeString = new UTF8String("NativeIntegerAttribute");
+		static readonly UTF8String isUnmanagedAttributeString = new UTF8String("IsUnmanagedAttribute");
+		static readonly UTF8String requiresLocationAttributeString = new UTF8String("RequiresLocationAttribute");
+
+		static bool IsCompilerReservedAttribute(ITypeDefOrRef attributeType)
+		{
+			return attributeType.Compare(systemRuntimeCompilerServicesString, tupleElementNamesAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, nullableAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, nullableContextAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, nativeIntegerAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, isReadOnlyAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, isUnmanagedAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, requiresLocationAttributeString)
+				|| attributeType.Compare(systemRuntimeCompilerServicesString, dynamicAttributeString);
+		}
+
 		static void ConvertCustomAttributes(MetadataTextColorProvider metadataTextColorProvider, AstNode attributedNode, IHasCustomAttribute customAttributeProvider, DecompilerSettings settings, StringBuilder sb, string attributeTarget = null, ConvertCustomAttributesFlags options = ConvertCustomAttributesFlags.None)
 		{
 			if (customAttributeProvider != null) {
@@ -2416,6 +2460,8 @@ namespace ICSharpCode.Decompiler.Ast {
 				foreach (var customAttribute in SortCustomAttributes(customAttributeProvider, settings.SortCustomAttributes, sb)) {
 					var attributeType = customAttribute.AttributeType;
 					if (attributeType == null)
+						continue;
+					if (DropReservedAttributes && IsCompilerReservedAttribute(attributeType))
 						continue;
 					if (attributeType.Compare(systemRuntimeCompilerServicesString, extensionAttributeString)) {
 						// don't show the ExtensionAttribute (it's converted to the 'this' modifier)
@@ -2593,6 +2639,15 @@ namespace ICSharpCode.Decompiler.Ast {
 				return CreateTypeOfExpression(sig.ToTypeDefOrRef(), sb);
 			if (argument.Value is UTF8String utf8String)
 				return new PrimitiveExpression(utf8String.String);
+			// Cpp2IL: the blob keeps the real argument type - [DrawIf("JointType", 0L, 1, 3)] really does store
+			// arg 3 as Quantum.Inspector.DrawIfHideType - but the module is loaded with no assembly resolver, so
+			// an enum declared in a sibling DLL does not Resolve() and the value falls out of the enum branch
+			// above as a bare int. C# has no implicit int -> enum conversion, and an attribute sits outside every
+			// method body, so the CS1503 is a class-level error: it takes down the whole type, not just its line.
+			// The cast is written to the blob's own type, so nothing is guessed at and nothing is lost; the same
+			// trick already rescues an unresolved-enum default parameter value from CS1750 in CreateParameters.
+			if (argument.Value != null && UnresolvedEnumCasts && IsUnresolvedEnumLikeType(argument.Type))
+				return new CastExpression(ConvertType(argument.Type, sb), new PrimitiveExpression(argument.Value));
 			return new PrimitiveExpression(argument.Value);
 		}
 		#endregion

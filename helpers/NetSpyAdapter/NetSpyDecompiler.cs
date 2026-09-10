@@ -10,14 +10,32 @@ namespace NetSpyAdapter
 {
     public static class NetSpyDecompiler
     {
-        public static void DecompileAssembly(byte[] assemblyBytes, Action<string, string> writeFile)
+        public static void DecompileAssembly(byte[] assemblyBytes, Action<string, string> writeFile, string referenceDirectory = null)
         {
             if (assemblyBytes == null || assemblyBytes.Length == 0 || writeFile == null)
             {
                 return;
             }
 
-            ModuleDefMD module = ModuleDefMD.Load(assemblyBytes);
+            // Without a resolver, an enum declared in another assembly cannot be resolved and the
+            // decompiler prints the bare literal instead of naming it - `Rotate(v, 1)` rather than
+            // `Rotate(v, Core.LogChannels.ALL)`. That does not compile, so 640 methods across 1,007 call
+            // sites were being counted as recovery failures when the IL was correct and the measurement
+            // was wrong. Every reference the recovered build needs sits in the directory it was written
+            // to, which is why the caller passes it.
+            ModuleContext context = null;
+
+            if (!string.IsNullOrEmpty(referenceDirectory) && Directory.Exists(referenceDirectory))
+            {
+                AssemblyResolver resolver = new AssemblyResolver { EnableTypeDefCache = true };
+                resolver.PreSearchPaths.Add(referenceDirectory);
+                context = new ModuleContext(resolver);
+                resolver.DefaultModuleContext = context;
+            }
+
+            ModuleDefMD module = context == null
+                ? ModuleDefMD.Load(assemblyBytes)
+                : ModuleDefMD.Load(assemblyBytes, context);
             try
             {
                 DecompilerSettings settings = new DecompilerSettings();
