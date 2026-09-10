@@ -29,6 +29,8 @@
     <Reference Include="Il2CppInterop.Runtime"><HintPath>$(Net6)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppInterop.Common"><HintPath>$(Net6)\Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2Cppmscorlib"><HintPath>$(Il2Cpp)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Il2Cpp)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(Il2Cpp)\UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
 </Project>

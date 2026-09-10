@@ -117,8 +117,11 @@ run its polynomial instead of its overflow guard.
 
 `Cpp2IL.VerifyMod` is that mod. Build it, drop `Cpp2IL.VerifyMod.dll` and `Cpp2IL.VerifyCore.dll` into
 the game's `Mods` folder alongside a Phase 1 file renamed `verifycheck-phase1.json`, and start the game.
-It runs at `OnInitializeMelon`, before any scene exists - every selected method is pure by construction,
-so none of them needs one - and writes `verifycheck-phase2.json` next to itself.
+**Press F9 in-game** to start the sweep; it writes `verifycheck-phase2.json` next to itself. It is
+deliberately not automatic: the sweep calls real game code with NaN, denormals and `int.MinValue`, which
+is exactly what nothing in a shipped game is written to survive, and minutes of that at startup would
+look like the game had frozen. It keeps the same `.inflight` / `.skip` journal as Phase 1, written before
+each call, so a method that takes the process down is named and skipped on the next run.
 
 ```
 dotnet build Cpp2IL.VerifyMod -c Release -p:GameDir=<game>

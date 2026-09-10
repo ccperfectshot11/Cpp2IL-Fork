@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using Cpp2IL.VerifyCore;
 using MelonLoader;
+using UnityEngine;
 
 [assembly: MelonInfo(typeof(Cpp2IL.VerifyMod.VerifyMod), "Cpp2IL VerifyMod", "1.0", "Cpp2IL")]
 [assembly: MelonGame(null, null)]
@@ -27,23 +28,38 @@ public class VerifyMod : MelonMod
     private const string InputFile = "verifycheck-phase1.json";
     private const string OutputFile = "verifycheck-phase2.json";
 
+    private string _directory;
+    private bool _ran;
+
     public override void OnInitializeMelon()
     {
-        var directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
-        var phase1 = Path.Combine(directory, InputFile);
+        _directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
 
-        if (!File.Exists(phase1))
+        if (!File.Exists(Path.Combine(_directory, InputFile)))
         {
-            LoggerInstance.Msg($"No {InputFile} beside the mod - nothing to verify. Copy the Phase 1 output there.");
+            LoggerInstance.Msg($"No {InputFile} beside the mod - nothing to verify.");
             return;
         }
 
-        // On the main thread at load, before any scene exists. Every selected method is pure by
-        // construction, so none of them needs a loaded scene, and running here means the game's own
-        // update loop never sees the several minutes this takes.
+        LoggerInstance.Msg("Phase 1 file found. Press F9 in-game to run the verification sweep.");
+        LoggerInstance.Msg("It takes minutes and calls thousands of game methods with hostile inputs, so it is");
+        LoggerInstance.Msg("deliberately not automatic: a sweep at startup would look like the game had frozen.");
+    }
+
+    // Triggered rather than automatic, and the reason is not politeness. The sweep calls real game code
+    // with NaN, denormals and int.MinValue, which is exactly what nothing in a shipped game is written to
+    // survive; if one of those takes the process down, it must be the player's choice to have started it,
+    // and the crash journal below must already name the culprit so the next run gets past it.
+    public override void OnUpdate()
+    {
+        if (_ran || !Input.GetKeyDown(KeyCode.F9))
+            return;
+
+        _ran = true;
+
         try
         {
-            Run(phase1, Path.Combine(directory, OutputFile));
+            Run(Path.Combine(_directory, InputFile), Path.Combine(_directory, OutputFile));
         }
         catch (Exception ex)
         {
@@ -59,6 +75,24 @@ public class VerifyMod : MelonMod
         var index = BuildNativeIndex();
         LoggerInstance.Msg($"Indexed {index.Count} candidate methods from the game's own assemblies.");
 
+        var journalPath = outputPath + ".inflight";
+        var skipPath = outputPath + ".skip";
+        var skip = File.Exists(skipPath)
+            ? new HashSet<string>(File.ReadAllLines(skipPath).Where(l => l.Length > 0), StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+
+        if (File.Exists(journalPath))
+        {
+            var crashed = File.ReadAllText(journalPath).Trim();
+            if (crashed.Length > 0 && skip.Add(crashed))
+            {
+                File.AppendAllText(skipPath, crashed + Environment.NewLine);
+                LoggerInstance.Warning($"Last run died in {crashed} - skipping it from now on.");
+            }
+
+            File.Delete(journalPath);
+        }
+
         var results = new List<MethodFuzzResult>();
         var resolved = 0;
         var missing = 0;
@@ -72,6 +106,14 @@ public class VerifyMod : MelonMod
             }
 
             resolved++;
+
+            if (skip.Contains(key))
+                continue;
+
+            // Written before the call, not after: a native method that takes the process down cannot be
+            // caught, so the only way to get past it is to know on the next run which one it was. Same
+            // mechanism as Phase 1's journal, and the two files are read the same way.
+            File.WriteAllText(journalPath, key);
 
             MethodFuzzResult result;
             try
@@ -93,6 +135,9 @@ public class VerifyMod : MelonMod
             if (results.Count % 250 == 0)
                 LoggerInstance.Msg($"  {results.Count} / {resolved} fuzzed...");
         }
+
+        if (File.Exists(journalPath))
+            File.Delete(journalPath);
 
         using (var writer = new StreamWriter(outputPath, false))
             SignatureJson.Write(writer, SignatureJson.PhaseNative, "in-game", request.Plan, results);
