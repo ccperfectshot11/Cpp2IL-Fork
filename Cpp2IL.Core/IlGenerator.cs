@@ -964,7 +964,7 @@ public static class IlGenerator
         // first - but it is a lower bound on its width, and a tight one. IL masks a shift count to the width
         // of what it shifts, so a count of 32 taken off a 32-bit member would hand that member back
         // unchanged; only a wider member can have been what the machine shifted.
-        if (instruction.OpCode is OpCode.ShiftLeft or OpCode.ShiftRight)
+        if (instruction.OpCode is OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned)
             return instruction.Operands[2] is Immediate { Value: >= 0 and < 64 } count ? (int)count.Value + 1 : 0;
 
         // Everywhere else the opposite operand is what the register was compared or combined with, and a
