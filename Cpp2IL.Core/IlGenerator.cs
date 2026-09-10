@@ -839,13 +839,18 @@ public static class IlGenerator
     {
         try
         {
-            body.MaxStack = body.ComputeMaxStack(false);
+            // Told to throw, not to guess. Passing false makes it return a depth computed from a stack it
+            // already knows does not balance, which is exactly the too-small number the runtime rejects -
+            // and silently, so the fallback below never got a chance to run.
+            body.MaxStack = body.ComputeMaxStack(true);
         }
         catch (Exception)
         {
             // One push per instruction is an upper bound no real body can exceed, since no CIL instruction
-            // pushes more than one value. Eight keeps a trivial body from declaring nothing at all.
-            body.MaxStack = Math.Max(8, body.Instructions.Count);
+            // pushes more than one value. Eight keeps a trivial body from declaring nothing at all, and the
+            // ceiling is the header field's own: MaxStack is a ushort, so a body with more than 65,535
+            // instructions would otherwise wrap to a tiny number and be refused for the original reason.
+            body.MaxStack = Math.Min(ushort.MaxValue, Math.Max(8, body.Instructions.Count));
         }
     }
 
