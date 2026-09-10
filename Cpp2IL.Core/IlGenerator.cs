@@ -45,6 +45,15 @@ public static class IlGenerator
     private static readonly bool RouteBackingFields = Environment.GetEnvironmentVariable("CPP2IL_BACKING_PROP") != "0";
 
     /// <summary>
+    /// Puts by-ref where C# puts it - on the argument, not on the value. On by default
+    /// (CPP2IL_REF_ARGS=0 disables). One switch rather than two because the emission and the typing it
+    /// depends on are a single decision: <see cref="Analysis.LocalVariables"/> stops calling a
+    /// pointer-carrying register a byref local only because <see cref="TryLoadByReference"/> now supplies
+    /// the address the call site needs, and either half on its own would trade one compile error for another.
+    /// </summary>
+    public static readonly bool ByRefAtCallSite = Environment.GetEnvironmentVariable("CPP2IL_REF_ARGS") != "0";
+
+    /// <summary>
     /// Emits an explicit initobj per local at method entry. The runtime already zeroes them because
     /// InitializeLocals is set, but the decompiled C# cannot prove it and every read becomes CS0165.
     /// Costs about 22% more output, so it is only worth it when the output is meant to be recompiled.
@@ -731,7 +740,7 @@ public static class IlGenerator
                         if (i < suppliedArgs)
                             LoadOperand(instruction.Operands[constructorArgIndex + i], method, locals, writeLine, parameterType);
                         else
-                            PushDefaultOf(parameterType, instructions);
+                            PushDefaultOf(parameterType, method, instructions);
                     }
 
                     instructions.Add(CilOpCodes.Newobj, importedMethod);
@@ -772,7 +781,7 @@ public static class IlGenerator
                     if (i < availableArgs)
                         LoadOperand(instruction.Operands[callParamIndex + i], method, locals, writeLine, parameterType);
                     else
-                        PushDefaultOf(parameterType, instructions);
+                        PushDefaultOf(parameterType, method, instructions);
                 }
 
                 instructions.Add(CilOpCodes.Call, importedMethod);
@@ -1175,6 +1184,92 @@ public static class IlGenerator
                 return;
         }
     }
+
+    /// <summary>
+    /// The IL type an ISIL local is actually stored in, whether it became a parameter or a local slot.
+    /// </summary>
+    private static TypeSignature? IlTypeOf(LocalVariable local, MethodDefinition method, Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (local.IsThis)
+            return null;
+
+        if (method.Parameters.FirstOrDefault(p => p.Name == local.Name) is { } parameter)
+            return parameter.ParameterType;
+
+        return locals.TryGetValue(local, out var ilLocal) ? ilLocal.VariableType : null;
+    }
+
+    /// <summary>
+    /// Pushes the address of a fresh slot of <paramref name="referent"/>. The zeroing is not decoration:
+    /// `ref x` demands a definitely-assigned variable where `out x` does not, and nothing here knows which
+    /// of the two the callee declared, so the slot is given a value before its address is taken.
+    /// </summary>
+    private static void EmitAddressOfScratch(TypeAnalysisContext referent, MethodDefinition method, CilInstructionCollection instructions)
+    {
+        var signature = referent.ToTypeSignature();
+        var scratch = new CilLocalVariable(signature);
+        method.CilMethodBody!.LocalVariables.Add(scratch);
+
+        instructions.Add(CilOpCodes.Ldloca, scratch);
+        instructions.Add(CilOpCodes.Initobj, signature.ToTypeDefOrRef());
+        instructions.Add(CilOpCodes.Ldloca, scratch);
+    }
+
+    /// <summary>
+    /// Loads an argument for a by-ref parameter as the managed pointer the signature demands.
+    ///
+    /// il2cpp keeps that pointer in a register, and a register becomes an ordinary local here, so the
+    /// argument arrives as a value: emitted as one it decompiles to `f(x)` against `f(out T)`, which is
+    /// CS1620 - 622 methods across the two argument positions, and the single largest shape once the
+    /// `_Injected` accessors il2cpp inlined are counted. C# spells by-ref at the call site rather than on
+    /// the value, so that is where it goes back.
+    ///
+    /// Where the local is the slot itself, its address is exactly what the native code computed and the
+    /// data flow survives - a write by the callee is visible to every later read, which is what makes this
+    /// a recovery and not a silencing. Where it is not, nothing at this site can be addressed without
+    /// claiming something false about it, so a slot is materialised: the `ref` is then right and only the
+    /// identity of the variable is lost, which was already lost when the lea did not survive lifting.
+    /// </summary>
+    private static bool TryLoadByReference(IOperand operand, TypeAnalysisContext referent, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        // Already an address: the ldloca/ldelema in the switch produce the pointer directly.
+        if (operand is AddressOf)
+            return false;
+
+        // Nothing can be a slot of these, so leave the operand to be emitted the way it always was.
+        if (referent is ByRefTypeAnalysisContext || referent.FullName is "System.Void")
+            return false;
+
+        var instructions = method.CilMethodBody!.Instructions;
+
+        if (operand is LocalVariable local && IlTypeOf(local, method, locals) is { } ilType)
+        {
+            // The local already carries a managed pointer - it is one of this method's own ref parameters,
+            // or a copy of one - so its value is the argument.
+            if (ilType is ByReferenceTypeSignature)
+            {
+                LoadLocal(local, method, locals);
+                return true;
+            }
+
+            // Only when the slot's type is the referent exactly: ldloca on anything else yields the wrong
+            // managed pointer type, trading CS1620 for a conversion error rather than fixing anything.
+            if (ilType.FullName == referent.ToTypeSignature().FullName)
+            {
+                if (method.Parameters.FirstOrDefault(p => p.Name == local.Name) is { } parameter)
+                    instructions.Add(CilOpCodes.Ldarga, parameter);
+                else
+                    instructions.Add(CilOpCodes.Ldloca, locals[local]);
+
+                return true;
+            }
+        }
+
+        EmitAddressOfScratch(referent, method, instructions);
+        return true;
+    }
+
     private static void LoadOperand(IOperand operand, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals, IMethodDescriptor writeLine,
         TypeAnalysisContext? expectedType = null)
@@ -1182,6 +1277,28 @@ public static class IlGenerator
         var instructions = method.CilMethodBody!.Instructions;
 
         var module = method.DeclaringModule!;
+
+        // A by-ref parameter has to be handed the address of a variable, and that has to be decided here,
+        // before anything below turns the operand into a value. Deliberately ahead of the null rewrite too:
+        // a byref is not a value type, so a literal 0 argument would otherwise become `f(null)`.
+        if (ByRefAtCallSite && expectedType is ByRefTypeAnalysisContext { ElementType: { } byRefReferent }
+            && TryLoadByReference(operand, byRefReferent, method, locals))
+            return;
+
+        // The mirror: il2cpp passes a value type wider than a register by address even where the parameter
+        // is declared by value, so the address-of the native code did is not the language's `ref` - the
+        // callee wants the value in that slot. Reading it here is what the original source wrote, and it is
+        // also what lets an untyped slot pick up the cast below. Emitted as an address it decompiles to
+        // `f(ref x)` against a by-value parameter - CS1615, 535 methods, and CS8373 where the callee is a
+        // property setter and the decompiler prints the call as an assignment.
+        // IntPtr is excluded: there the pointer itself is what the parameter is declared to hold, so the
+        // address really is the argument. And only where the slot is the parameter's own type, or has no
+        // type at all and so picks up the cast below - reading a slot typed as something else would swap
+        // CS1615 for a conversion error, which is movement rather than progress.
+        if (ByRefAtCallSite && operand is AddressOf { Target: LocalVariable passedIndirectly }
+            && expectedType is { IsValueType: true } && expectedType.FullName is not ("System.IntPtr" or "System.UIntPtr")
+            && (passedIndirectly.Type == null || passedIndirectly.Type.FullName == expectedType.FullName))
+            operand = passedIndirectly;
 
         // A null reference reaches us as an integer zero, which would otherwise be emitted as a literal 0
         // and read back as a cast from a number.
@@ -1405,10 +1522,20 @@ public static class IlGenerator
         return false;
     }
 
-    private static void PushDefaultOf(TypeAnalysisContext type, CilInstructionCollection instructions)
+    private static void PushDefaultOf(TypeAnalysisContext type, MethodDefinition method, CilInstructionCollection instructions)
     {
         //TODO Remove this, we should be handling arguments correctly in ISIL resolution, this is a hack to emit balanced stacks.
         //TODO At the *very* least we should emit a console.writeline saying that we did this.
+
+        // A byref is not a value type but null is not a stand-in for one either: the callee is handed the
+        // address of a variable, so the placeholder has to be a variable, not the absence of one.
+        if (ByRefAtCallSite && type is ByRefTypeAnalysisContext { ElementType: { } referent }
+            && referent is not ByRefTypeAnalysisContext && referent.FullName is not "System.Void")
+        {
+            EmitAddressOfScratch(referent, method, instructions);
+            return;
+        }
+
         if (!type.IsValueType)
         {
             instructions.Add(CilOpCodes.Ldnull);

@@ -1041,10 +1041,33 @@ public static class LocalVariables
 
                 var parameterType = calledMethod.Parameters[parameterIndex].ParameterType;
 
-                if (parameterType is ByRefTypeAnalysisContext { ElementType: { } referencedType }
-                    && Addressed(instruction.Operands[i]) is { } referenced)
+                // A by-ref parameter says how the argument is passed, not what the argument holds. Where we
+                // found the address-of, the local it names is the variable being passed, so it holds the
+                // referent - that is the type worth learning.
+                //
+                // Where we did not, the operand is only the register il2cpp computed the pointer in, and
+                // claiming T& for it is the one thing that must not happen: C# has no way to write a byref
+                // local that is not bound to an existing variable, so every definition of it decompiles to
+                // `ref T x = <value>;` - CS8172, and CS1510 on the same line, 546 and 416 methods. The
+                // by-ref-ness belongs at the call site instead, where LoadOperand now puts it back.
+                if (parameterType is ByRefTypeAnalysisContext { ElementType: { } referencedType })
                 {
-                    changed |= SetTypeIfUnknown(referenced, referencedType);
+                    if (Addressed(instruction.Operands[i]) is { } referenced)
+                        changed |= SetTypeIfUnknown(referenced, referencedType);
+                    else if (!IlGenerator.ByRefAtCallSite && instruction.Operands[i] is LocalVariable pointerRegister)
+                        changed |= SetTypeIfUnknown(pointerRegister, parameterType);
+
+                    continue;
+                }
+
+                // The mirror case: a value type larger than a register is passed indirectly by the ABI even
+                // when the parameter is declared by value, so an address-of here names a variable holding
+                // exactly the parameter's own type.
+                if (IlGenerator.ByRefAtCallSite && instruction.Operands[i] is AddressOf { Target: LocalVariable indirectlyPassed })
+                {
+                    if (parameterType.IsValueType)
+                        changed |= SetTypeIfUnknown(indirectlyPassed, parameterType);
+
                     continue;
                 }
 
