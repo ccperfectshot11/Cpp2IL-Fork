@@ -488,6 +488,17 @@ public static class IlGenerator
 
         EmitLocalInitialisation(body, localInitialisation);
 
+        // The method header declares how deep the evaluation stack goes, and the runtime rejects the whole
+        // body when the declared depth is too small - "Stack overflow at offset 0", before a single
+        // instruction runs. It is why every recovered method that takes an argument is refused by the JIT
+        // while the zero-argument getters work: the getters happen to fit in the default.
+        //
+        // AsmResolver can compute it, but throws where the stack does not balance, which recovered bodies
+        // routinely do not. So compute it when possible and fall back to a depth that is certainly enough
+        // otherwise - over-declaring costs a little stack space and is always accepted, while
+        // under-declaring costs the entire method.
+        SetMaxStack(body);
+
         // Add analysis warnings
         var instructions = body.Instructions;
         foreach (var warning in context.AnalysisWarnings)
@@ -823,6 +834,20 @@ public static class IlGenerator
             or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.Char" => IntegerKind.Sized,
         _ => IntegerKind.NotInteger,
     };
+
+    private static void SetMaxStack(CilMethodBody body)
+    {
+        try
+        {
+            body.MaxStack = body.ComputeMaxStack(false);
+        }
+        catch (Exception)
+        {
+            // One push per instruction is an upper bound no real body can exceed, since no CIL instruction
+            // pushes more than one value. Eight keeps a trivial body from declaring nothing at all.
+            body.MaxStack = Math.Max(8, body.Instructions.Count);
+        }
+    }
 
     // Limit so we don't run into the 16mb limit (see AsmResolver issue #775)
     private static string Diagnostic(string message) 
