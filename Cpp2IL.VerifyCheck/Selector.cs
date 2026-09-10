@@ -41,6 +41,7 @@ internal sealed class SelectionResult
     public long MethodsWithBody;
     public long DllsScanned;
     public long DllsUnreadable;
+    public long DllsStubbed;                 // Cpp2IL never analysed these - see IsStubbedModule
 
     // Tier 2's other half, measured but not implemented: instance methods on CLASSES whose instance
     // fields are all primitive-only and which have a parameterless constructor. Counting them is what
@@ -103,6 +104,18 @@ internal static class Selector
 
             result.DllsScanned++;
             var assemblyName = module.Assembly?.Name?.Value ?? Path.GetFileNameWithoutExtension(dll);
+
+            // Cpp2IL does not analyse these at all - AsmResolverDllOutputFormatIlRecovery.FillMethodBody
+            // replaces every one of their methods with a stub - so `Mathf.Clamp` comes out as
+            // `ldc.r4 0; ret`. Fuzzing a stub finds exactly what one would expect and reports it as a
+            // method whose logic is missing, which is true and says nothing: 676 of the 757 methods this
+            // tool once called "constant output" were stubs. They are not recovered code and do not belong
+            // in a measurement of how well recovery works.
+            if (IsStubbedModule(assemblyName))
+            {
+                result.DllsStubbed++;
+                continue;
+            }
 
             // Per module, not shared: the recovered build ships its own System.Xml and friends, so the
             // same type name can mean a different type one DLL over, and a shared cache would answer for
@@ -448,4 +461,14 @@ internal static class Selector
         candidate.Reason = reason;
         return candidate;
     }
+
+    // The same list AsmResolverDllOutputFormatIlRecovery.FillMethodBody skips. Kept in step with it by
+    // hand: they are in different projects, and a mismatch would silently measure stubs again.
+    private static bool IsStubbedModule(string assemblyName) =>
+        assemblyName.StartsWith("UnityEngine.", StringComparison.Ordinal)
+        || assemblyName.StartsWith("Unity.", StringComparison.Ordinal)
+        || assemblyName.StartsWith("System.", StringComparison.Ordinal)
+        || assemblyName == "System"
+        || assemblyName.StartsWith("mscorlib", StringComparison.Ordinal);
+
 }
