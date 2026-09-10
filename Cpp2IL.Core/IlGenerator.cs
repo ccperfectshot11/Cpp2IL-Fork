@@ -704,6 +704,20 @@ public static class IlGenerator
         }
     }
 
+    // Loads a local's address rather than its value when the local is a struct, so a field store lands on
+    // the local itself. Returns whether it did; a reference-typed local needs no such thing, since the
+    // value on the stack already IS the object being written into.
+    private static bool LoadLocalAddressIfStruct(LocalVariable local, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (local.Type is not { IsValueType: true } || local.IsThis || !locals.TryGetValue(local, out var ilLocal))
+            return false;
+
+        // A parameter is not in the locals map; LoadLocal resolves those, and ldarga is its business.
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldloca, ilLocal);
+        return true;
+    }
+
     // The type a loaded operand leaves on the stack, which is what decides whether it needs unwrapping.
     private static TypeAnalysisContext? OperandType(IOperand operand) => operand switch
     {
@@ -960,7 +974,13 @@ public static class IlGenerator
 
                     if (!written.IsStatic)
                     {
-                        LoadLocal(field.Local, method, locals);
+                        // The same reasoning the InnerPath below already applies, one level up: a struct
+                        // loaded by value is a copy, and stfld into a copy writes somewhere that is thrown
+                        // away - and at runtime it is worse than useless, because the value on the stack is
+                        // not a reference, so the store faults. FPMatrix3x3::get_Zero sets five fields on a
+                        // copy and returns the untouched original; nine Quantum methods failed exactly here.
+                        if (!LoadLocalAddressIfStruct(field.Local, method, locals))
+                            LoadLocal(field.Local, method, locals);
 
                         if (field.InnerPath.Length > 0)
                         {
