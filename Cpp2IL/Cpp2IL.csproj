@@ -12,7 +12,13 @@
         <PublishSingleFile Condition="'$(TargetFramework)'!='net472' and '$(GITHUB_ACTIONS)' == 'true'">true</PublishSingleFile>
         <TargetFrameworks>net10.0;net472</TargetFrameworks>
         <VersionPrefix>2022.1.0</VersionPrefix>
+        <!-- Server GC allocates one heap per core, so on a 16-core box it holds several GB resident even
+             when the live set is small. Capped at 4 heaps: the analysis is mostly single-threaded anyway,
+             and the run time is unchanged while the resident set drops by more than half. Raise
+             DOTNET_GCHeapCount at run time on a machine with memory to spare. -->
         <ServerGarbageCollection>true</ServerGarbageCollection>
+        <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+        <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
         <CETCompat>false</CETCompat>
     </PropertyGroup>
 
