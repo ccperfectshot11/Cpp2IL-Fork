@@ -38,6 +38,9 @@ namespace Cpp2IL.VerifyCheck;
 //     --timeout S         seconds one method may take before the run is abandoned, default 30
 //     --no-statics        drop methods that read static fields instead of flagging them
 //     --compare A B       diff two signature files (this is what Phase 2 is for) and stop
+//
+//   Cpp2IL.VerifyCheck --census <dllDir> [dllNameSubstring] [options]
+//     un mod SEPARAT, care raspunde la alta intrebare - vezi Census.cs
 internal static class Program
 {
     private static volatile string _inFlight;
@@ -60,11 +63,25 @@ internal static class Program
         if (args.Length >= 2 && args[0] == "--check-phase1")
             return CheckPhase1(args[1]);
 
+        // RECENSAMANT - alt mod, alta intrebare, alt fisier. Vezi Census.cs. Ruta este asezata inaintea
+        // oricarei alte verificari a argumentelor si nu atinge nimic din drumul de comparatie de mai
+        // jos: un mod nou care ar putea schimba ce metode ajung in faza 2 nu ar fi un mod nou, ar fi o
+        // modificare a masuratorii de comportament.
+        //
+        // Comutatorul de mediu exista pentru scripturile care nu pot schimba linia de comanda; steagul
+        // este calea obisnuita si are prioritate.
+        if (args.Length >= 1 && (args[0] == "--census" || args[0] == "--census-report"))
+            return Census.Run(args);
+
+        if (args.Length >= 1 && !args[0].StartsWith("--") && Environment.GetEnvironmentVariable("CPP2IL_VERIFY_CENSUS") == "1")
+            return Census.Run(args);
+
         if (args.Length < 1 || args[0].StartsWith("--"))
         {
             Console.Error.WriteLine("usage: Cpp2IL.VerifyCheck <dllDir> [dllNameSubstring] [--seed N] [--iterations N]");
             Console.Error.WriteLine("       [--edge-cap N] [--out FILE] [--select-only] [--max N] [--timeout S] [--no-statics]");
             Console.Error.WriteLine("       Cpp2IL.VerifyCheck --compare <phase1.json> <phase2.json>");
+            Console.Error.WriteLine("       Cpp2IL.VerifyCheck --census <dllDir> [dllNameSubstring] [--sample N] [--timeout S] ...");
             return 2;
         }
 

@@ -271,3 +271,104 @@ And one that only exists once instance methods are in: a method that **takes the
 The crash journal names it, the next run skips it, and the list in `<out>.skip` is a list of recovered
 bodies that fault on an argument the runtime cannot protect itself from - the strongest evidence Phase 1
 produces on its own that a body is wrong.
+
+## Census mode: how much of the recovered code is even executable?
+
+Everything above answers "does the recovered code *behave* like the original". To answer it, the
+selector has to be able to build the same arguments in two processes, and that admits **1,545 of the
+~72,200 methods with a body - about 2%**. The conservatism is correct: you cannot compare without
+symmetry. But it leaves no picture at all of the other 98%. We do not know whether those methods run,
+throw, or kill the runtime.
+
+Census mode answers the *other* question. It attempts every method, compares nothing, and classifies
+the outcome.
+
+```
+dotnet run --project Cpp2IL.VerifyCheck -c Release -- --census <dllDir> [dllNameSubstring] [options]
+```
+
+| option | default | what it does |
+|---|---|---|
+| `--out FILE` | `verifycheck-census.json` | census output; `.partial`, `.inflight`, `.skip` and `.universe` hang off this name |
+| `--sample N` | off | attempt N methods spread **evenly** over the whole universe - the right way to start |
+| `--max N` | all | attempt only the first N (alphabetically first DLLs; biased, use `--sample`) |
+| `--attempts N` | 3 | invocations per method: the first all-zero, the rest fuzzed |
+| `--timeout S` | 5 | seconds one method may run before its thread is abandoned |
+| `--max-hung N` | 4 | abandoned threads tolerated before the process restarts itself |
+| `--no-generics` | off | do not guess generic instantiations |
+| `--no-degenerate` | off | only attempt methods whose arguments can be built faithfully |
+| `--refresh-universe` | off | rebuild the cached selection instead of reloading it |
+| `--census-report FILE` | - | print the report from a run **in progress** (point it at the `.partial`) and stop |
+
+`CPP2IL_VERIFY_CENSUS=1` routes a plain `Cpp2IL.VerifyCheck <dllDir>` into census mode, for scripts that
+cannot change their command line. The flag wins over the variable.
+
+### The categories
+
+Per method, exactly one outcome:
+
+| outcome | meaning |
+|---|---|
+| `Ran` | at least one invocation returned normally |
+| `ThrewManaged` | it was invoked and threw an ordinary exception every time |
+| `RuntimeRefusedBody` | `InvalidProgramException` / `BadImageFormatException` - **the recovered IL is not valid IL**. The most actionable output in the whole report |
+| `TypeInitFailed` | the declaring type's `.cctor` - recovered code too - blew up, taking every method of that type with it |
+| `MissingMember` | the recovered metadata promises a type or member that does not exist |
+| `Timeout` | did not return inside the budget; its thread was abandoned |
+| `Killed` | took the process down. Found in the journal on the next start |
+| `NotAttempted*` | arguments, receiver, generics, assembly load, token resolve, static ctor, analysis error |
+
+### Degenerate arguments, and why the report shouts about them
+
+The comparison path needs a *reproducible* argument. The census needs only *an* argument, so a class
+parameter can be `null`, a string `""`, an array empty, a struct zeroed, and a `this` an object obtained
+from `RuntimeHelpers.GetUninitializedObject` - allocated with **no constructor run at all**, deliberately:
+a recovered constructor is itself unverified code, and if it threw, the census would blame the method it
+was trying to measure.
+
+Those are honest inputs for "does it run" and near-worthless for anything else. **"Ran clean with
+all-null arguments" is much weaker evidence than it looks** - a body whose first instruction is a null
+check on its argument reaches `ret` without executing any of its logic. So every fabrication is named in
+the result (`degeneracies`: `null-reference`, `empty-string`, `empty-array`, `zeroed-struct`,
+`uninitialised-receiver`, `byref`, `generic-guess-<T>`) and the report splits `Ran` three ways:
+nothing-to-construct, faithful, degenerate. Read the third line with suspicion.
+
+Generic methods are closed over a **guessed** type argument (`int`, then `object`, then `string` - the
+first the constraints accept). That is not the instantiation the game uses. Those results carry
+`generic-guess-<T>`.
+
+### Surviving the run
+
+A full pass of the comparison sweep over 1,383 methods took **15 restarts and skipped 14 killers**. Over
+72,199 methods it will be much worse, so the census reuses the same mechanism and adds two things:
+
+* `<out>.partial` - one result per line, flushed as it completes. A restart resumes.
+* `<out>.inflight` - the method about to be invoked, written **before** the call. Whatever is still there
+  on the next start is what killed the process; it goes to `<out>.skip` and is **recorded as `Killed`**
+  rather than silently dropped. In a census an omitted method is a lie.
+* `<out>.universe` - the selection, cached. Without it every restart would re-scan 150 DLLs before
+  calling anything, and over dozens of restarts that costs more than the run.
+* a **worker thread per method**. A hung method cannot be stopped (`Thread.Abort` throws on .NET Core),
+  but it can be *abandoned*: the thread stays alive in the background and the run carries on with a fresh
+  one, which avoids a full restart per infinite loop. Only up to `--max-hung`; past that the process
+  exits 5 and asks to be re-run, because four spinning threads make the measurement meaningless. A hang
+  in the *load* phase exits immediately - it holds the assembly-load lock, so everything after it would
+  time out in turn.
+
+Exit codes: `0` done, `2` bad arguments, `5` re-run me (hung threads).
+
+### Reading a partial run
+
+`--census-report <out>.partial` renders the full report from whatever is finished, with percentages
+against the real universe (read from `.universe`), not against the sample. Start with
+`--sample 2000`, read the shape, then scale up.
+
+### Two traps
+
+* **`Cpp2IL.VerifyCheck` and `Cpp2IL.VerifyCore` are NOT in `Cpp2IL.slnx`.** A solution build skips them
+  silently and you measure a stale binary. Build the project explicitly:
+  `dotnet build Cpp2IL.VerifyCheck/Cpp2IL.VerifyCheck.csproj -c Release`.
+* **The universe excludes stubbed modules.** `UnityEngine.*`, `Unity.*`, `System.*` and `mscorlib` are
+  never analysed by Cpp2IL - every one of their methods is a stub - so `Selector` skips those DLLs and
+  the census never sees them. That is the same exclusion the comparison path makes, and it is why the
+  denominator is ~72,200 and not the full DLL count.
