@@ -1,9 +1,7 @@
 # Metode care se comporta DIFERIT fata de jocul care ruleaza.
-# Generat din comparatia Fazei 1 (cod recuperat) cu Faza 2 (joc real).
-# 322 metode, din 979 comparabile.
-
-Antlr4.Runtime.Misc.MurmurHash::Finish(System.Int32,System.Int32)->System.Int32
-Antlr4.Runtime.Misc.MurmurHash::Update(System.Int32,System.Int32)->System.Int32
+# Generat din comparatia Fazei 1 (cod recuperat) cu Faza 2 (joc real), seed 20260910.
+# 275 metode, din 978 comparabile. Anterior 322 din 979.
+# Reparate intre timp: 47 (26 argument pierdut la cmov, 19 latime pe 64 biti, 2 deplasare fara semn). Regresate: 0.
 Cinemachine.AxisState+Recentering::Validate(this:Cinemachine.AxisState+Recentering)->System.Void
 Cinemachine.ClipperLib+Int128::Int128Mul(System.Int64,System.Int64)->Cinemachine.ClipperLib+Int128
 Cinemachine.ClipperLib+Int128::op_GreaterThan(Cinemachine.ClipperLib+Int128,Cinemachine.ClipperLib+Int128)->System.Boolean
@@ -20,11 +18,8 @@ Cinemachine.Utility.UnityVectorExtensions::ProjectOntoPlane(UnityEngine.Vector3,
 Coffee.UIParticleExtensions.Vector3Extensions::GetScaled(UnityEngine.Vector3,UnityEngine.Vector3)->UnityEngine.Vector3
 Coffee.UIParticleExtensions.Vector3Extensions::GetScaled(UnityEngine.Vector3,UnityEngine.Vector3,UnityEngine.Vector3)->UnityEngine.Vector3
 Core.VectorUtils::CopyWithY(UnityEngine.Vector2,System.Single)->UnityEngine.Vector2
-Dreamteck.DMath::Clamp(System.Double,System.Double,System.Double)->System.Double
-Dreamteck.DMath::Clamp01(System.Double)->System.Double
 Dreamteck.LinearAlgebraUtility::InverseLerp(UnityEngine.Vector3,UnityEngine.Vector3,UnityEngine.Vector3)->System.Single
 LiteNetLib.NetUtils::RelativeSequenceNumber(System.Int32,System.Int32)->System.Int32
-Photon.Deterministic.FP::MulTruncate(Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FP::op_Addition(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
 Photon.Deterministic.FP::op_Addition(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FP::op_Division(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
@@ -40,7 +35,6 @@ Photon.Deterministic.FP::op_LessThan(System.Int32,Photon.Deterministic.FP)->Syst
 Photon.Deterministic.FP::op_LessThanOrEqual(Photon.Deterministic.FP,System.Int32)->System.Boolean
 Photon.Deterministic.FP::op_LessThanOrEqual(System.Int32,Photon.Deterministic.FP)->System.Boolean
 Photon.Deterministic.FP::op_Modulus(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Multiply(Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FP::op_Subtraction(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
 Photon.Deterministic.FP::op_Subtraction(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FPBounds2::Expand(this:Photon.Deterministic.FPBounds2,Photon.Deterministic.FP)->System.Void
@@ -50,15 +44,8 @@ Photon.Deterministic.FPCollision::TriangleContainsPointExclusive(Photon.Determin
 Photon.Deterministic.FPCollision::TriangleContainsPointInclusive(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->System.Boolean
 Photon.Deterministic.FPCollision::TriangleContainsPointInclusive(Photon.Deterministic.FPVector3,Photon.Deterministic.FPVector3,Photon.Deterministic.FPVector3,Photon.Deterministic.FPVector3)->System.Boolean
 Photon.Deterministic.FPMath::CeilToInt(Photon.Deterministic.FP)->System.Int32
-Photon.Deterministic.FPMath::Clamp(System.Int32,System.Int32,System.Int32)->System.Int32
-Photon.Deterministic.FPMath::Clamp(System.Int64,System.Int64,System.Int64)->System.Int64
 Photon.Deterministic.FPMath::Hermite(Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
-Photon.Deterministic.FPMath::Lerp(Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
-Photon.Deterministic.FPMath::Max(Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
-Photon.Deterministic.FPMath::Min(Photon.Deterministic.FP,Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FPMath::RoundToInt(Photon.Deterministic.FP)->System.Int32
-Photon.Deterministic.FPMatrix2x2::MultiplyVector(this:Photon.Deterministic.FPMatrix2x2,Photon.Deterministic.FPVector2)->Photon.Deterministic.FPVector2
-Photon.Deterministic.FPMatrix2x2::get_Determinant(this:Photon.Deterministic.FPMatrix2x2)->Photon.Deterministic.FP
 Photon.Deterministic.FPMatrix3x3::get_Transposed(this:Photon.Deterministic.FPMatrix3x3)->Photon.Deterministic.FPMatrix3x3
 Photon.Deterministic.FPMatrix3x3::op_Addition(Photon.Deterministic.FPMatrix3x3,Photon.Deterministic.FPMatrix3x3)->Photon.Deterministic.FPMatrix3x3
 Photon.Deterministic.FPMatrix3x3::op_Multiply(Photon.Deterministic.FPMatrix3x3,Photon.Deterministic.FPMatrix3x3)->Photon.Deterministic.FPMatrix3x3
@@ -67,14 +54,9 @@ Photon.Deterministic.FPQuaternion::Conjugate(Photon.Deterministic.FPQuaternion)-
 Photon.Deterministic.FPQuaternion::IsIdentity(Photon.Deterministic.FPQuaternion)->System.Boolean
 Photon.Deterministic.FPQuaternion::get_Conjugated(this:Photon.Deterministic.FPQuaternion)->Photon.Deterministic.FPQuaternion
 Photon.Deterministic.FPQuaternion::get_MagnitudeSqrRaw(this:Photon.Deterministic.FPQuaternion)->System.Int64
-Photon.Deterministic.FPVector2::Cross(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->Photon.Deterministic.FP
-Photon.Deterministic.FPVector2::CrossRaw(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->System.Int64
-Photon.Deterministic.FPVector2::DistanceSquared(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->Photon.Deterministic.FP
-Photon.Deterministic.FPVector2::Dot(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->Photon.Deterministic.FP
 Photon.Deterministic.FPVector2::Equals(this:Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->System.Boolean
 Photon.Deterministic.FPVector2::IsLeftOf(this:Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->System.Boolean
 Photon.Deterministic.FPVector2::Rotate(Photon.Deterministic.FPVector2,Photon.Deterministic.FP,Photon.Deterministic.FP)->Photon.Deterministic.FPVector2
-Photon.Deterministic.FPVector2::get_SqrMagnitude(this:Photon.Deterministic.FPVector2)->Photon.Deterministic.FP
 Photon.Deterministic.FPVector2::op_Division(Photon.Deterministic.FPVector2,Photon.Deterministic.FP)->Photon.Deterministic.FPVector2
 Photon.Deterministic.FPVector2::op_Multiply(Photon.Deterministic.FP,Photon.Deterministic.FPVector2)->Photon.Deterministic.FPVector2
 Photon.Deterministic.FPVector2::op_Multiply(Photon.Deterministic.FPVector2,Photon.Deterministic.FP)->Photon.Deterministic.FPVector2
@@ -106,7 +88,6 @@ Photon.Deterministic.RNGSession::Next(this:Photon.Deterministic.RNGSession,Syste
 Photon.Deterministic.RNGSession::NextFP(this:Photon.Deterministic.RNGSession)->Photon.Deterministic.FP
 Photon.Deterministic.RNGSession::NextUInt32(this:Photon.Deterministic.RNGSession)->System.UInt32
 Photon.Deterministic.RNGSession::NextUnbiased(this:Photon.Deterministic.RNGSession,System.UInt32)->System.UInt32
-Photon.Deterministic.UdpMath::Clamp(System.Int32,System.Int32,System.Int32)->System.Int32
 Quantum.AssetGuid::get_IsValid(this:Quantum.AssetGuid)->System.Boolean
 Quantum.AssetRef::Equals(this:Quantum.AssetRef,Quantum.AssetRef)->System.Boolean
 Quantum.AssetRefAI::Equals(this:Quantum.AssetRefAI,Quantum.AssetRefAI)->System.Boolean
@@ -165,14 +146,9 @@ Quantum.AssetRefWaveSpawnerConfig::Equals(this:Quantum.AssetRefWaveSpawnerConfig
 Quantum.AssetRefWaveSpawnerPrototype::Equals(this:Quantum.AssetRefWaveSpawnerPrototype,Quantum.AssetRefWaveSpawnerPrototype)->System.Boolean
 Quantum.AssetRefWeaponDef::Equals(this:Quantum.AssetRefWeaponDef,Quantum.AssetRefWeaponDef)->System.Boolean
 Quantum.Button::Update(this:Quantum.Button,System.Int32,System.Boolean)->Quantum.Button
-Quantum.CCDSettings::set_AngularVelocityThreshold(this:Quantum.CCDSettings,Photon.Deterministic.FP)->System.Void
-Quantum.CCDSettings::set_LinearVelocityThreshold(this:Quantum.CCDSettings,Photon.Deterministic.FP)->System.Void
 Quantum.ColorRGBA::GetHashCode(this:Quantum.ColorRGBA)->System.Int32
 Quantum.DancefloorGroupWeight::GetHashCode(this:Quantum.DancefloorGroupWeight)->System.Int32
 Quantum.DeathMatchPlayer::CompareTo(this:Quantum.DeathMatchPlayer,Quantum.DeathMatchPlayer)->System.Int32
-Quantum.EasingHelper::EaseIn(Photon.Deterministic.FP)->Photon.Deterministic.FP
-Quantum.EasingHelper::EaseInOut(Photon.Deterministic.FP)->Photon.Deterministic.FP
-Quantum.EasingHelper::EaseOut(Photon.Deterministic.FP)->Photon.Deterministic.FP
 Quantum.EditorRectUtils::Adjust(UnityEngine.Rect,System.Single,System.Single,System.Single,System.Single)->UnityEngine.Rect
 Quantum.EditorRectUtils::SetWidthHeight(UnityEngine.Rect,UnityEngine.Vector2)->UnityEngine.Rect
 Quantum.EditorRectUtils::ToRect(UnityEngine.Vector2,System.Single,System.Single)->UnityEngine.Rect
@@ -196,14 +172,12 @@ Quantum.Physics2D.NarrowChecks+BoxBox+OOBB::get_Max(this:Quantum.Physics2D.Narro
 Quantum.Physics2D.NarrowChecks+BoxBox+OOBB::get_Min(this:Quantum.Physics2D.NarrowChecks+BoxBox+OOBB)->Photon.Deterministic.FPVector2
 Quantum.Physics3D.FPQuaternionRawInt::op_Explicit(Photon.Deterministic.FPQuaternion)->Quantum.Physics3D.FPQuaternionRawInt
 Quantum.Shape2D+BoxShape::get_Extents(this:Quantum.Shape2D+BoxShape)->Photon.Deterministic.FPVector2
-Quantum.Task.AtomicInt::CompareExchange(this:Quantum.Task.AtomicInt,System.Int32,System.Int32)->System.Int32
 Quantum.Task.AtomicInt::Exchange(this:Quantum.Task.AtomicInt,System.Int32)->System.Int32
 Quantum.TriangleMesh::BitsRequiredForNumber(System.Int32)->System.Int32
 Quantum.TriangleMesh::BitsRequiredForNumber(System.UInt32)->System.Int32
 Rewired.ButtonStateRecorder::EzoBbSHUicePWnErWYwbQMbBfKxOA(System.Int32,System.Int32)->System.Int32
 Rewired.ButtonStateRecorder::fZNqFGxTTRLBwYPwVgAdiXVGTTwDA(System.Int32,System.Int32)->System.Int32
 Rewired.ComponentControls.TouchInteractable::SGdVvHPLACaSVIGntyMTatcvGtjZA(System.Int32)->System.Int32
-Rewired.ComponentControls.TouchInteractable::cENzhlYGCELsWXyTiPnZgeuYMRhH(System.Int32)->System.Boolean
 Rewired.ComponentControls.TouchInteractable::rZmZQrhrXAGTBXIHJwuxnbDbfRJfA(System.Int32)->System.Boolean
 Rewired.ComponentControls.TouchPad+TUKJsddbcTxMwHpEydWUABWUVbfp::OaETxTTojrgKxiFtMBnUDJmIcYrfA(System.Int32,System.Int32)->System.Int32
 Rewired.ComponentControls.TouchPad+TUKJsddbcTxMwHpEydWUABWUVbfp::rQfONOQcCWixZwPycxGWxLhcNQQn(System.UInt32,System.UInt32)->System.Boolean
@@ -247,20 +221,10 @@ Rewired.Utils.Classes.Data.ScreenRect::get_center(this:Rewired.Utils.Classes.Dat
 Rewired.Utils.InputTools::AxisToDigitalValue(System.Single,System.Single)->System.Single
 Rewired.Utils.InputTools::TransformAxis2DComponentValue(System.Single,System.Single,System.Single,System.Single)->System.Single
 Rewired.Utils.MathTools::Approximately(System.Single,System.Single)->System.Boolean
-Rewired.Utils.MathTools::Clamp(System.Byte,System.Byte,System.Byte)->System.Byte
-Rewired.Utils.MathTools::Clamp(System.Double,System.Double,System.Double)->System.Double
-Rewired.Utils.MathTools::Clamp(System.Int16,System.Int16,System.Int16)->System.Int16
-Rewired.Utils.MathTools::Clamp(System.Int32,System.Int32,System.Int32)->System.Int32
-Rewired.Utils.MathTools::Clamp(System.Int64,System.Int64,System.Int64)->System.Int64
-Rewired.Utils.MathTools::Clamp(System.SByte,System.SByte,System.SByte)->System.SByte
-Rewired.Utils.MathTools::Clamp(System.Single,System.Single,System.Single)->System.Single
-Rewired.Utils.MathTools::Clamp(System.UInt16,System.UInt16,System.UInt16)->System.UInt16
 Rewired.Utils.MathTools::Clamp(System.UInt32,System.UInt32,System.UInt32)->System.UInt32
 Rewired.Utils.MathTools::Clamp(System.UInt64,System.UInt64,System.UInt64)->System.UInt64
 Rewired.Utils.MathTools::Clamp(UnityEngine.Vector2,System.Single,System.Single)->UnityEngine.Vector2
 Rewired.Utils.MathTools::Clamp(UnityEngine.Vector3,System.Single,System.Single)->UnityEngine.Vector2
-Rewired.Utils.MathTools::Clamp01(System.Single)->System.Single
-Rewired.Utils.MathTools::IntPow(System.Int32,System.UInt32)->System.Int32
 Rewired.Utils.MathTools::IsExactlyEqual(System.Single,System.Single)->System.Boolean
 Rewired.Utils.MathTools::IsLessMagnitudeOrEqual(System.Double,System.Double)->System.Boolean
 Rewired.Utils.MathTools::IsLessMagnitudeOrEqual(System.Int16,System.Int16)->System.Boolean
@@ -279,34 +243,24 @@ Rewired.Utils.MathTools::IsNearZero(System.Single,System.Single)->System.Boolean
 Rewired.Utils.MathTools::IsZero(System.Double,System.Double)->System.Boolean
 Rewired.Utils.MathTools::IsZero(System.Single,System.Single)->System.Boolean
 Rewired.Utils.MathTools::Max(System.Double,System.Double)->System.Double
-Rewired.Utils.MathTools::Max(System.Int16,System.Int16)->System.Int16
-Rewired.Utils.MathTools::Max(System.Int32,System.Int32)->System.Int32
-Rewired.Utils.MathTools::Max(System.Int64,System.Int64)->System.Int64
 Rewired.Utils.MathTools::Max(System.Single,System.Single)->System.Single
-Rewired.Utils.MathTools::Max(System.UInt16,System.UInt16)->System.UInt16
 Rewired.Utils.MathTools::Max(System.UInt32,System.UInt32)->System.UInt32
 Rewired.Utils.MathTools::Max(System.UInt64,System.UInt64)->System.UInt64
 Rewired.Utils.MathTools::MaxMagnitude(System.Double,System.Double)->System.Double
 Rewired.Utils.MathTools::MaxMagnitude(System.Int16,System.Int16)->System.Int16
 Rewired.Utils.MathTools::MaxMagnitude(System.SByte,System.SByte)->System.SByte
 Rewired.Utils.MathTools::MaxMagnitude(System.Single,System.Single)->System.Single
-Rewired.Utils.MathTools::MaxMagnitude(System.UInt16,System.UInt16)->System.UInt16
 Rewired.Utils.MathTools::MaxMagnitude(System.UInt32,System.UInt32)->System.UInt32
 Rewired.Utils.MathTools::MaxMagnitude(System.UInt64,System.UInt64)->System.UInt64
 Rewired.Utils.MathTools::MaxMagnitude(UnityEngine.Vector3,UnityEngine.Vector3)->UnityEngine.Vector3
 Rewired.Utils.MathTools::Min(System.Double,System.Double)->System.Double
-Rewired.Utils.MathTools::Min(System.Int16,System.Int16)->System.Int16
-Rewired.Utils.MathTools::Min(System.Int32,System.Int32)->System.Int32
-Rewired.Utils.MathTools::Min(System.Int64,System.Int64)->System.Int64
 Rewired.Utils.MathTools::Min(System.Single,System.Single)->System.Single
-Rewired.Utils.MathTools::Min(System.UInt16,System.UInt16)->System.UInt16
 Rewired.Utils.MathTools::Min(System.UInt32,System.UInt32)->System.UInt32
 Rewired.Utils.MathTools::Min(System.UInt64,System.UInt64)->System.UInt64
 Rewired.Utils.MathTools::MinMagnitude(System.Double,System.Double)->System.Double
 Rewired.Utils.MathTools::MinMagnitude(System.Int16,System.Int16)->System.Int16
 Rewired.Utils.MathTools::MinMagnitude(System.SByte,System.SByte)->System.SByte
 Rewired.Utils.MathTools::MinMagnitude(System.Single,System.Single)->System.Single
-Rewired.Utils.MathTools::MinMagnitude(System.UInt16,System.UInt16)->System.UInt16
 Rewired.Utils.MathTools::MinMagnitude(System.UInt32,System.UInt32)->System.UInt32
 Rewired.Utils.MathTools::MinMagnitude(System.UInt64,System.UInt64)->System.UInt64
 Rewired.Utils.MathTools::MinMagnitude(UnityEngine.Vector3,UnityEngine.Vector3)->UnityEngine.Vector3
@@ -323,4 +277,3 @@ Shapes.ShapesMath::Rotate90CW(UnityEngine.Vector2)->UnityEngine.Vector2
 Shapes.TexturePlacement::RectCnt(System.Single,System.Single,System.Single,System.Single)->UnityEngine.Rect
 Steamworks.AccountID_t::CompareTo(this:Steamworks.AccountID_t,Steamworks.AccountID_t)->System.Int32
 Steamworks.CGameID::CompareTo(this:Steamworks.CGameID,Steamworks.CGameID)->System.Int32
-Stumble.UGC.Perspectives.GodCameraUtils::GetZoomDistance(System.Single,System.Single,System.Single)->System.Single
