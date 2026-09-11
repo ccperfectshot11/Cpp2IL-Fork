@@ -116,6 +116,18 @@ internal static class Selector
     private static readonly bool AllowPureBclLeaf =
         Environment.GetEnvironmentVariable("CPP2IL_VERIFY_BCL_LEAF") == "1";
 
+    // LATIRE 3: o nota "Warning:" asezata dupa ultimul ret este cod mort si nu se ia in seama - nici ca
+    // motiv de respingere, nici ca muchie in graful de apeluri. Vezi nota lunga de la locul apelului
+    // pentru mecanism si pentru dovada. Masurat pe out_wide, peste enum-uri: 1.828 -> 1.838 (+10).
+    //
+    // Zece, nu doua mii cinci sute: din cele 4.012 metode care poarta numai note "Warning:", numai 125
+    // trec de verificarile de semnatura (1.896 sunt metode de instanta pe clase, 1.151 iau un parametru
+    // clasa, 331 iau un string), din ele 60 mor pe alt apel nerezolvabil si 23 sunt statice fara ce
+    // intoarce. Raman 41, iar inchiderea listei albe mai taie din ele. Zece sunt totusi zece metode de
+    // matematica cu virgula fixa - FPQuaternion, FPVector3, Quantum.Transform3D.
+    private static readonly bool SkipDeadWarnings =
+        Environment.GetEnvironmentVariable("CPP2IL_VERIFY_DEAD_WARNINGS") != "0";
+
     private static readonly HashSet<string> PureBclMembers = new(StringComparer.Ordinal)
     {
         "System.IntPtr::get_Zero", "System.UIntPtr::get_Zero",
@@ -140,7 +152,9 @@ internal static class Selector
     // Tiparit in raport ca o rulare A/B sa se poata citi singura din log: fara asta, doua fisiere cu
     // numere diferite nu spun care comutator le-a produs.
     public static string ActiveWidenings =>
-        (AdmitEnums ? "enums=ON" : "enums=off") + ", " + (AllowPureBclLeaf ? "bcl-leaf=ON" : "bcl-leaf=off");
+        (AdmitEnums ? "enums=ON" : "enums=off")
+        + ", " + (AllowPureBclLeaf ? "bcl-leaf=ON" : "bcl-leaf=off")
+        + ", " + (SkipDeadWarnings ? "dead-warnings=ON" : "dead-warnings=off");
 
     public static SelectionResult Select(string dllDir, string filter, bool allowStatics)
     {
@@ -356,6 +370,14 @@ internal static class Selector
                 return Fail(candidate, "pointer local");
 
         var instructions = body.Instructions;
+
+        // Ultima instructiune care chiar incheie metoda. Tot ce sta dupa ea nu se executa niciodata, si
+        // asta - nu textul - este ce face o nota "Warning:" inofensiva. Vezi DeadTrailingWarning.
+        var lastTerminator = -1;
+        for (var i = 0; i < instructions.Count; i++)
+            if (instructions[i].OpCode.Code is CilCode.Ret or CilCode.Throw or CilCode.Rethrow)
+                lastTerminator = i;
+
         for (var i = 0; i < instructions.Count; i++)
         {
             var instruction = instructions[i];
@@ -382,6 +404,30 @@ internal static class Selector
 
             var callee = instruction.Operand as IMethodDescriptor;
             var calleeName = callee?.Name?.Value ?? "";
+
+            // O nota "Warning:" asezata dupa ultimul ret NU este un marker in sensul care conteaza aici.
+            // Un marker adevarat spune "am pus altceva in locul logicii"; un Warning spune "am lasat o
+            // insemnare langa cod mort", si IlGenerator chiar asa le scrie - bucla peste
+            // context.AnalysisWarnings adauga ldstr+call la COADA corpului, dupa SetMaxStack, deci dupa
+            // tot ce se executa vreodata.
+            //
+            // Verificat pe out_wide, nu presupus: din 4.012 metode care poarta numai note "Warning:",
+            // 4.011 au ret si la toate 4.011 fiecare nota sta dupa ULTIMUL ret - zero exceptii. A
+            // 4.012-a nu are ret, dar se termina cu throw. Conditia de mai jos cere chiar asta, deci un
+            // corp care nu se termina nicicum nu poate trece prin ea - capcana cu bodyurile fara ret se
+            // inchide singura.
+            //
+            // Ce castiga in practica nu este scaparea de respingere, ci scaparea de MUCHIE: build-urile
+            // rulate aici merg cu CPP2IL_NO_HELPERS=1, deci nota cheama Console.WriteLine, iar textul
+            // "Warning: ..." nu se potriveste cu niciunul din MarkerMessages - metoda nu era respinsa ca
+            // marker oricum. Era respinsa fiindca apelul catre Console.WriteLine se inregistra ca apel,
+            // mscorlib-ul recuperat e modul ciot si nu se scaneaza niciodata, deci inchiderea listei albe
+            // o arunca la "calls outside the whitelist". Cod care nu ruleaza nu are ce cauta in graful de
+            // apeluri, si asta ramane adevarat pe orice build.
+            if (SkipDeadWarnings
+                && calleeName is "NoteDecompilerIssue" or "WriteLine"
+                && DeadTrailingWarning(instructions, i, lastTerminator))
+                continue;
 
             // IlGenerator's own marker call, and the fallback it emits when the helper type was not
             // injected: the same message text goes to Console.WriteLine instead.
@@ -423,6 +469,27 @@ internal static class Selector
 
         candidate.BodySafe = true;
         return candidate;
+    }
+
+    // Aceeasi privire inapoi de trei instructiuni ca PrecedingMarkerString, ca sa nu existe doua idei
+    // despre ce inseamna "sirul dinaintea apelului", plus singura conditie care conteaza: sirul sa stea
+    // dupa ultima instructiune care incheie metoda.
+    private static bool DeadTrailingWarning(IList<CilInstruction> instructions, int callIndex, int lastTerminator)
+    {
+        if (lastTerminator < 0)
+            return false;
+
+        for (var j = callIndex - 1; j >= 0 && j >= callIndex - 3; j--)
+        {
+            if (instructions[j].OpCode.Code != CilCode.Ldstr)
+                continue;
+
+            return j > lastTerminator
+                && instructions[j].Operand is string text
+                && text.StartsWith("Warning: ", StringComparison.Ordinal);
+        }
+
+        return false;
     }
 
     private static bool PrecedingMarkerString(IList<CilInstruction> instructions, int callIndex)

@@ -19,6 +19,12 @@ function.
 
 ## Running it
 
+> **Proiectul NU este in `Cpp2IL.slnx`.** Nici acesta, nici `Cpp2IL.VerifyCore`. O compilare a
+> solutiei raporteaza "Build succeeded" fara sa le atinga, deci se poate porni jocul cu instrumentul
+> VECHI si trage concluzia ca o schimbare de aici n-a facut nimic. Compileaza-le explicit, pe nume,
+> inainte de fiecare masuratoare - `dotnet build Cpp2IL.VerifyCheck -c Release` le ia pe amandoua,
+> fiindca modul are referinta la VerifyCore.
+
 ```
 dotnet build Cpp2IL.VerifyCheck -c Release
 
@@ -50,6 +56,7 @@ diferite si fara explicatie de unde vin.
 |---|---|---|
 | `CPP2IL_VERIFY_ENUMS` | pornit (`=0` opreste) | accepta un enum ca pe intregul de sub el - la parametru, la receptor si la tipul intors. Masurat pe `out_w56`: selectia trece de la 1.395 la 1.828 de metode. Simetria e verificata pe metadate: toate cele 1.761 de enum-uri recuperate exista si in joc, cu acelasi tip de baza. |
 | `CPP2IL_VERIFY_BCL_LEAF` | oprit (`=1` porneste) | lasa apelurile catre cativa membri **puri** ai bibliotecii gazdei (`IntPtr.Zero`, `Math.Abs/Min/Max/Sign/Floor/Ceiling/Truncate/Round/Sqrt`, `BitConverter`) sa fie frunze ale grafului, in loc sa ceara ca tinta sa fie si ea in lista alba. Masurat: +151 singur, +227 peste enum-uri. Oprit implicit pentru ca egalitatea bit-cu-bit intre .NET si mscorlib-ul IL2CPP se poate doar masura, nu deduce. |
+| `CPP2IL_VERIFY_DEAD_WARNINGS` | pornit (`=0` opreste) | o nota `Warning:` asezata dupa ultimul `ret` este cod mort: nici motiv de respingere, nici muchie in graful de apeluri. Masurat pe `out_wide`, peste enum-uri: 1.828 -> 1.838. Verificat pe date: din 4.012 metode care poarta numai astfel de note, la 4.011 fiecare nota sta dupa ultimul `ret`, iar a 4.012-a se termina cu `throw`. |
 | `CPP2IL_VERIFY_IL2CPP_GLOBAL_NS` | pornit (`=0` opreste) | **faza 2**: taie prefixul `Il2Cpp.` de la tipurile pe care jocul le tine fara namespace. Fara el niciun astfel de tip nu se potriveste niciodata - masurat, 185 de metode pierdute din 247. |
 | `CPP2IL_VERIFY_INDEX_CTORS` | pornit (`=0` opreste) | **faza 2**: indexeaza si constructorii, pe care `GetMethods` nu ii intoarce niciodata. Fara el, 92 de chei `.ctor` cerute si zero raspunse. |
 
