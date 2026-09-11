@@ -63,9 +63,10 @@ public static class IlGenerator
     // against 62 methods the report counted as recoverable - and -50 = +12 repaired - 62 lost, which is the
     // whole of the deficit. Both write sites now zero a multi-field struct first, which C# reads as the
     // assignment it could not infer and which the member covering the struct overwrites byte for byte.
-    // Still OFF by default (CPP2IL_UNION_STRUCTS=1 enables) until the matrix is run again; StackCoercion
-    // reads the same switch for its half. See UnionValueField.
-    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
+    // Measured after the fix: 13.231, adica +11 fata de 13.220 - deci pornit implicit
+    // (CPP2IL_UNION_STRUCTS=0 il opreste), iar CS0165 a disparut cu totul, nu doar a scazut.
+    // StackCoercion citeste acelasi comutator pentru jumatatea lui. Vezi UnionValueField.
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
 
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
     private static readonly bool ComparisonTypes = Environment.GetEnvironmentVariable("CPP2IL_CMP_TYPES") == "1";

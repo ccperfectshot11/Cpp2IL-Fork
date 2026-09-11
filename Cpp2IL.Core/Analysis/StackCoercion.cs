@@ -48,7 +48,7 @@ public static class StackCoercion
     // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=1 enables both; still off by
     // default until the matrix is run again - see IlGenerator for what the first run measured and why the
     // cost was the write back rather than the read).
-    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
+    private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
 
     // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
     // body that keeps finding work is looping over something unexpected rather than converging.
