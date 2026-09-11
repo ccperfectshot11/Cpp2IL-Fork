@@ -63,23 +63,31 @@ Metadata parsing is inherited from Cpp2IL and spans Unity 5 through Unity 6. Wha
 in *this* fork is much narrower: `Il2CppClass` field offsets and the signatures of the il2cpp runtime
 helper functions.
 
-And those track the **IL2CPP version**, not the Unity version. 538 Unity releases from 2020 onward
-collapse into six:
+And those track the **IL2CPP version**, not the Unity version — and there are only thirteen of those
+in the whole history of IL2CPP, covering 1,221 Unity releases from 4.6 to 6000:
 
-| IL2CPP | Unity |
-|---|---|
-| 24, 25, 26 | 2020.1 – 2020.2 |
-| 27 | 2020.2 – 2021.2 |
-| 28 | 2021.2 |
-| **29** | **2021.2 – 6000.0** |
+| IL2CPP | Unity series | span | priority |
+|---|---|---|---|
+| **29** | 9 | **2021.2 – 6000.0** | **1 — in progress** |
+| **24** | 14 | **2017.1 – 2020.2** | **2 — largest untouched** |
+| 27 | 4 | 2020.2 – 2021.2 | 3 — the bridge between them |
+| 25, 26, 28 | 1 each | 2020.2 / 2020.2 / 2021.2 | 4 — short-lived, months each |
+| 16 | 7 | 4.6 – 5.4 | 5 |
+| 18, 19, 20, 21, 22, 23 | 1–2 each | 5.3 – 5.6 | 5 |
 
-IL2CPP 29 alone covers everything from Unity 2021.2 to Unity 6, and it is the one being worked on.
-The intention is to cover 24 through 29, which is every Unity version from 2020.
+The distribution is lopsided in a useful way. **Two versions cover 23 of the 39 Unity series**: 29 for
+anything modern, 24 for the whole 2017–2020 era. With those two, almost everything anyone actually
+wants to decompile is covered. The rest are transitional — 25 and 26 both existed only within
+2020.2, 18 only within 5.3.
 
-**What that needs, per version:** a sample game built with it, the matching `libil2cpp` source (it
-ships inside every Unity Editor at `Editor/Data/il2cpp/libil2cpp`) to read the struct layouts from,
-and a pass through the pipeline fixing what breaks. The cost is dominated by *testing*, not by
-writing code — which is exactly the part that scales with people helping.
+**What each version needs:** a sample game built with it, the matching `libil2cpp` source (it ships
+inside every Unity Editor at `Editor/Data/il2cpp/libil2cpp`, so the version you need is wherever that
+Unity version is installed) to read the struct layouts from, and a pass through the pipeline fixing
+what breaks. The cost is dominated by *testing*, not by writing code.
+
+**The blocker is samples, not effort.** A version with a sample game to hand is hours-to-days of work;
+a version without one is blocked no matter how much time is spent. That is why the first item under
+"Help is wanted" is simply a game and its Unity version — no programming required to contribute it.
 
 ## Help is wanted, and the bar is low
 
