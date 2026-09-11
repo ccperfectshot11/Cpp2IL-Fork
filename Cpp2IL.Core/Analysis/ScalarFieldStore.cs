@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -36,12 +37,26 @@ public static class ScalarFieldStore
         foreach (var instruction in method.ControlFlowGraph!.Blocks.SelectMany(block => block.Instructions))
         {
             if (instruction.OpCode != OpCode.Move
-                || instruction.Operands is not [FieldReference { InnerPath.Length: 0 } field, Immediate constant])
+                || instruction.Operands is not [FieldReference { InnerPath.Length: 0 } field, { } source])
                 continue;
+
+            FieldAnalysisContext[]? path = source switch
+            {
+                Immediate constant => LeadingPrimitivePath(field.Field, constant),
+
+                // A register holding a primitive wrote exactly that primitive's width, so the same descent
+                // applies with the type in place of the width check. Without it the store keeps the struct
+                // as its destination and the coercion that has to follow builds a whole new struct around
+                // the value, which zeroes the fields after the one the instruction wrote.
+                LocalVariable { Type: { } sourceType } when ScalarWidth(sourceType) != null
+                    => LeadingPrimitivePath(field.Field, sourceType.FullName),
+
+                _ => null,
+            };
 
             // A new reference rather than a write into this one: copy propagation can hand the same
             // operand object to more than one instruction, and only this store is being redirected.
-            if (LeadingPrimitivePath(field.Field, constant) is { Length: > 0 } path)
+            if (path is { Length: > 0 })
                 instruction.SetOperand(0, new FieldReference(field.Field, field.Local, field.Offset, path));
         }
     }
@@ -60,16 +75,25 @@ public static class ScalarFieldStore
     /// business - it is left exactly as it was.
     /// </remarks>
     private static FieldAnalysisContext[]? LeadingPrimitivePath(FieldAnalysisContext field, Immediate constant)
+        => LeadingPrimitivePath(field, primitive => ScalarWidth(primitive) is { } width
+            && (width >= 8 || constant.UnsignedValue >> (width * 8) == 0));
+
+    /// <summary>
+    /// The same, for a value whose type is already known: the descent stops at a primitive only where it is
+    /// the one being written, so no conversion is invented on the way.
+    /// </summary>
+    private static FieldAnalysisContext[]? LeadingPrimitivePath(FieldAnalysisContext field, string sourceType)
+        => LeadingPrimitivePath(field, primitive => primitive?.FullName == sourceType);
+
+    private static FieldAnalysisContext[]? LeadingPrimitivePath(FieldAnalysisContext field, Func<TypeAnalysisContext?, bool> accepts)
     {
         var current = field.FieldType;
         var path = new List<FieldAnalysisContext>();
 
         for (var depth = 0; depth < MaxNestingDepth; depth++)
         {
-            if (ScalarWidth(current) is { } width)
-                return path.Count > 0 && (width >= 8 || constant.UnsignedValue >> (width * 8) == 0)
-                    ? path.ToArray()
-                    : null;
+            if (ScalarWidth(current) is not null)
+                return path.Count > 0 && accepts(current) ? path.ToArray() : null;
 
             if (current is not { IsValueType: true } || current.IsEnumType)
                 return null;

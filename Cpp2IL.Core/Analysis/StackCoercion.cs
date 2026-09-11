@@ -50,6 +50,12 @@ public static class StackCoercion
     // cost was the write back rather than the read).
     private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") != "0";
 
+    // Reads and writes the field a struct begins with where a whole struct met a slot that holds only that
+    // field, in either direction. Needed for CPP2IL_NESTED_RAW to pay for itself: with the offsets walked
+    // correctly, a register-wide access at a struct's address resolves to the struct, and the mismatch
+    // moves from a dropped store to a type the decompiler will not accept. CPP2IL_LEADING_FIELD=0 disables.
+    private static readonly bool LeadingFieldAccess = Environment.GetEnvironmentVariable("CPP2IL_LEADING_FIELD") != "0";
+
     // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
     // body that keeps finding work is looping over something unexpected rather than converging.
     private const int UntypedArithmeticRounds = 4;
@@ -780,11 +786,21 @@ public static class StackCoercion
                 ? [new CilInstruction(CilOpCodes.Unbox_Any, expected.ToTypeDefOrRef())]
                 : null;
 
+        // The destination may be a struct that holds exactly what is already on the stack: Quantum's
+        // AssetRef is one AssetGuid, which is itself one long, and an implicit operator that reads the guid
+        // and returns the ref lands here. WrapperField stops at a field that is not a primitive, because a
+        // register holds the primitive, so the pairing is looked for separately - and before the unwrap
+        // below, which would take the guid apart and then try to put the long into a field whose type is
+        // the guid: the same mismatch one level down.
+        var wrapDirectly = wanted == Kind.Struct && value.Kind == Kind.Struct && value.Type != null
+            ? LeadingFieldOfType(expected, value.Type)
+            : null;
+
         // A wrapper struct is the primitive it holds as far as the register is concerned, so the value goes
         // in and out of it through that one field rather than being reinterpreted.
-        if (value.Kind == Kind.Struct)
+        if (value.Kind == Kind.Struct && wrapDirectly == null)
         {
-            if (ValueFieldOf(value.Type, RegisterBits(wanted)) is not { } read)
+            if ((ValueFieldOf(value.Type, RegisterBits(wanted)) ?? LeadingField(value.Type, wanted)) is not { } read)
                 return null;
 
             var unwrapped = new Value(read.Signature!.FieldType, KindOf(read.Signature.FieldType), value.ProducedBy);
@@ -801,7 +817,7 @@ public static class StackCoercion
         if (wanted == Kind.Struct)
         {
             // A store puts a whole register back, so a union is written through the member covering it.
-            if (ValueFieldOf(expected, 0) is not { } written)
+            if ((wrapDirectly ?? ValueFieldOf(expected, 0) ?? LeadingField(expected, value.Kind)) is not { } written)
                 return null;
 
             var target = written.Signature!.FieldType;
@@ -990,6 +1006,57 @@ public static class StackCoercion
             }
 
             return only?.Signature?.FieldType is CorLibTypeSignature ? only : null;
+        });
+    }
+
+    private static readonly ConcurrentDictionary<string, FieldDefinition?> LeadingFields = new();
+
+    /// <summary>
+    /// The instance field a struct begins with, where it is what the value on the stack is. A register-wide
+    /// access at a struct's address touches the field at its start - <c>[v+0]</c> over a Vector3 is
+    /// <c>v.x</c> - but the offset of the struct and of that field are the same number, so the resolver
+    /// cannot tell the two apart and hands over the struct. This is the read-side mirror of what
+    /// ScalarFieldStore does for the store that has the same ambiguity.
+    ///
+    /// Only where the field's kind is the one the other end wants, so nothing is invented: a Vector3
+    /// reaching a float slot is its x, while a Vector3 reaching an int slot is two types that cannot both
+    /// be true and is left as the honest mismatch it is.
+    /// </summary>
+    private static FieldDefinition? LeadingField(TypeSignature? type, Kind wanted)
+        => LeadingFieldAccess && FirstField(type) is { } first && KindOf(first.Signature?.FieldType) == wanted
+            ? first
+            : null;
+
+    /// <summary>
+    /// The same leading field, chosen because it is exactly the type already on the stack rather than
+    /// because of its kind - which is what pairs a one-field struct with the struct it holds.
+    /// </summary>
+    private static FieldDefinition? LeadingFieldOfType(TypeSignature? type, TypeSignature value)
+        => LeadingFieldAccess && FirstField(type) is { } first
+            && first.Signature?.FieldType.FullName == value.FullName
+            ? first
+            : null;
+
+    /// <summary>
+    /// The first instance field a struct declares. Declaration order is layout order in this metadata -
+    /// Vector2 is x then y, Quantum's AssetObjectIdentifier is Path at 0 then Guid at 8 - and a struct whose
+    /// fields overlap instead is an explicit layout, which is UnionField's business rather than this one's.
+    /// </summary>
+    private static FieldDefinition? FirstField(TypeSignature? type)
+    {
+        if (type is not { ElementType: ElementType.ValueType } || KindOf(type) != Kind.Struct)
+            return null;
+
+        return LeadingFields.GetOrAdd(type.FullName, _ =>
+        {
+            if (Resolve(type) is not { IsExplicitLayout: false } definition)
+                return null;
+
+            foreach (var field in definition.Fields)
+                if (!field.IsStatic)
+                    return field.Signature == null ? null : field;
+
+            return null;
         });
     }
 
