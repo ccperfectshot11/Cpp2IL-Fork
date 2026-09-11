@@ -31,6 +31,22 @@ public class Instruction : IOperand
     // Exists to clear the return register after a CallVoid, basically.
     public Register? ImplicitDefinition;
 
+    /// <summary>
+    /// Pe cati biti a rulat masina operatia asta, sau 0 unde liftul nu spune nimic. Deocamdata numai
+    /// deplasarile o seteaza, fiindca doar la ele latimea schimba raspunsul.
+    ///
+    /// Latimea se pierde in <see cref="Utils.X86Utils.GetRegisterName"/>, care trece fiecare registru prin
+    /// GetFullRegister(), deci eax, ax si al ajung toate "rax" inainte sa existe ISIL. Nota sta pe
+    /// instructiune, nu pe operand, pentru ca numele registrului e si identitatea lui: eax si rax sunt
+    /// acelasi loc de stocare, iar a le da latimi diferite ar face din ele doi registri distincti pentru
+    /// SSA, care ar pune phi-uri intre cele doua jumatati ale aceluiasi registru.
+    ///
+    /// Nu intra in <see cref="IsStructurallyEqualTo"/>: e o nota despre instructiunea nativa din care a
+    /// iesit asta, nu despre operatia in sine, iar comparatia aia cere deja acelasi Index, deci doua
+    /// instructiuni venite din acelasi loc au oricum aceeasi latime.
+    /// </summary>
+    public int NativeOperandBits;
+
     public bool IsFallThrough =>
         OpCode switch
         {

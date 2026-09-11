@@ -47,6 +47,41 @@ public class X86InstructionSet : Cpp2IlInstructionSet
     /// </summary>
     private static readonly bool UnsignedShiftRight = Environment.GetEnvironmentVariable("CPP2IL_UNSIGNED_SHR") != "0";
 
+    /// <summary>
+    /// Noteaza pe cati biti a rulat masina o deplasare, fiindca liftul pierde latimea operandului:
+    /// <see cref="X86Utils.GetRegisterName"/> trece fiecare registru prin GetFullRegister(), deci eax, ax
+    /// si al devin toate "rax" inainte sa existe ISIL. Emisia ramane atunci fara nimic de decis si scoate
+    /// deplasarea pe tipul pe care inferenta l-a dat registrului, care e int32 ori de cate ori valoarea a
+    /// intrat dintr-un argument int.
+    ///
+    /// Asta strica exact conversia de la baza simularii deterministe. In GameAssembly.dll toate
+    /// supraincarcarile mixte FP/int sunt scrise la fel - "movsxd rax, ecx ; shl rax, 0x10" urmat de add,
+    /// sub sau o comparatie - deci masina largeste intai la 64 de biti si abia apoi deplaseaza. Dar movsxd
+    /// se ridica drept Move simplu, pentru ca dupa GetFullRegister ambii lui operanzi sunt "rax", asa ca
+    /// largirea dispare cu totul si ce iese din FP::op_Implicit(int) e "ldarg 0; ldc.i4 16; shl; conv.i8":
+    /// deplasare pe 32 de biti si largire dupa. Pentru 65536 asta da 0 in loc de 4294967296.
+    ///
+    /// Ordinea nu e o alegere pe care compilatorul o face cand si cand: cautarea in binar gaseste tiparul
+    /// nativ corect (movsxd urmat de shl pe 64) de 19 ori si pe cel pe care il produce codul recuperat
+    /// (deplasare pe 32 urmata de movsxd) de zero ori.
+    ///
+    /// Numai deplasarile, fiindca doar la ele latimea muta raspunsul. La add, sub, mul, and, or si xor
+    /// bitii de jos ies la fel pe 32 si pe 64, deci o latime gresita se vede abia daca rezultatul e largit
+    /// mai incolo - si aia e deja treaba lui IntegerWidening. Impartirea si restul chiar depind de latime,
+    /// dar ele se ridica prin expandarea lui Cdq/Idiv, unde nu e un singur operand de largit, si sunt 54 de
+    /// aparitii fata de 931 la deplasari, deci raman pe alta data.
+    ///
+    /// CPP2IL_SHIFT_WIDTH=0 revine la liftul fara latime.
+    /// </summary>
+    private static readonly bool ShiftWidth = Environment.GetEnvironmentVariable("CPP2IL_SHIFT_WIDTH") != "0";
+
+    // Latimea operandului destinatie, care la o deplasare e chiar valoarea deplasata. Aceeasi forma ca la
+    // Push/Pop mai jos: registrul isi spune marimea, iar un operand din memorie o ia din MemorySize.
+    private static int NativeBits(Instruction instruction)
+        => ShiftWidth
+            ? (instruction.Op0Kind == OpKind.Register ? instruction.Op0Register.GetSize() : instruction.MemorySize.GetSize()) * 8
+            : 0;
+
     private const int LaneBytes = 4;
 
     // Lane 0 is the register itself, so a value that only ever lived in the low lane is the same operand
@@ -462,14 +497,17 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 break;
             case Mnemonic.Shl: // unsigned shift
             case Mnemonic.Sal: // signed shift
-                Add(instruction.IP, ISIL.OpCode.ShiftLeft, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                Add(instruction.IP, ISIL.OpCode.ShiftLeft, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1))
+                    .NativeOperandBits = NativeBits(instruction);
                 break;
             case Mnemonic.Shr: // logical shift - zero fill
                 Add(instruction.IP, UnsignedShiftRight ? ISIL.OpCode.ShiftRightUnsigned : ISIL.OpCode.ShiftRight,
-                    ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                    ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1))
+                    .NativeOperandBits = NativeBits(instruction);
                 break;
             case Mnemonic.Sar: // arithmetic shift - sign fill
-                Add(instruction.IP, ISIL.OpCode.ShiftRight, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                Add(instruction.IP, ISIL.OpCode.ShiftRight, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1))
+                    .NativeOperandBits = NativeBits(instruction);
                 break;
             case Mnemonic.And:
             case Mnemonic.Andps: //Floating point and

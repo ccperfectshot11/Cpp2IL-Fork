@@ -992,6 +992,70 @@ public static class IlGenerator
                 or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8
         };
 
+    // Boolean si Char stau langa cele fara semn pentru ca si ele se largesc umpland cu zero; ce decide
+    // conversia e daca bitul de sus al valorii inguste inseamna semn, nu daca tipul e un numar.
+    private static bool IsUnsignedIntegerType(TypeAnalysisContext type)
+        => type.ToTypeSignature() is CorLibTypeSignature
+        {
+            ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Char
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U1
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U2
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U4
+                or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8
+        };
+
+    /// <summary>
+    /// Ce tip lasa pe stiva incarcarea unui operand impreuna cu despachetarea care o urmeaza. Nu e acelasi
+    /// lucru cu <see cref="OperandType"/>: un FP incarcat ca struct pleaca de acolo ca int64, pentru ca
+    /// <see cref="UnwrapValueStruct"/> ii citeste RawValue-ul imediat dupa. Fara pasul asta o deplasare pe
+    /// un FP ar parea ingusta si ar primi o largire in plus peste una care s-a facut deja.
+    /// </summary>
+    private static TypeAnalysisContext? StackTypeOfOperand(Instruction instruction, int operandIndex, MethodAnalysisContext context)
+    {
+        var loaded = OperandType(instruction.Operands[operandIndex]);
+
+        return UnwrapValueStructs && ArithmeticValueField(loaded, OperationBits(instruction, operandIndex, context)) is { } field
+            ? field.FieldType
+            : loaded;
+    }
+
+    /// <summary>
+    /// Conversia care aduce valoarea deplasata la latimea pe care masina chiar a folosit-o, sau null cand
+    /// nu e nimic de reparat. Vezi <see cref="ISIL.Instruction.NativeOperandBits"/> pentru de ce latimea
+    /// lipseste din ISIL si de unde vine inapoi.
+    ///
+    /// Numai pe directia de largire. Liftul spune 64, pe stiva sta un intreg de 32 sau mai ingust, deci
+    /// deplasarea ar rula pe 32 si ar taia exact bitii pe care o deplasare la stanga ii scoate sus - ce a
+    /// facut masina cu 65536 in FP::op_Implicit. Directia cealalta, masina pe 32 si stiva pe 64, exista si
+    /// ea, dar acolo a taia inseamna sa arunci biti pe care altcineva i-a largit intentionat, si nu am
+    /// masurat-o, deci ramane pe dinafara.
+    ///
+    /// Unde e deja pe 64 nu se emite nimic, deci metodele care ies corecte azi raman neatinse. Iar unde
+    /// destinatia e tot un int32, largirea se intoarce printr-un conv.i4 la stocare si rezultatul e acelasi
+    /// ca inainte, fiindca bitii de jos ai unei deplasari la stanga nu depind de latime - deci pasul asta nu
+    /// poate strica o metoda, doar s-o lase cum era.
+    ///
+    /// Semnul il da tipul declarat, nu binarul, si asta e limita care ramane: masina spune prin movsxd sau
+    /// mov/movzx daca a largit cu semn sau cu zero, dar exact acea instructiune e cea pe care liftul o
+    /// pierde, fiindca dupa GetFullRegister ambii ei operanzi au acelasi nume si ea devine un Move de la
+    /// registru la el insusi. Deci un camp int32 incarcat cu mov si deplasat pe 64 primeste aici conv.i8
+    /// unde masina a umplut cu zero. Se repara abia cand extensiile inceteaza sa mai fie Move-uri.
+    /// </summary>
+    private static CilOpCode? ShiftWidening(Instruction instruction, TypeAnalysisContext? stackType)
+    {
+        if (instruction.NativeOperandBits != 64)
+            return null;
+
+        if (instruction.OpCode is not (OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.ShiftRightUnsigned))
+            return null;
+
+        if (stackType == null || !IsIntegerType(stackType) || PrimitiveWidth(stackType) is not { } width || width >= 8)
+            return null;
+
+        return IsUnsignedIntegerType(stackType) ? CilOpCodes.Conv_U8 : CilOpCodes.Conv_I8;
+    }
+
     /// <summary>
     /// How wide the machine ran this instruction, in bits, or 0 where nothing about the site says - which
     /// <see cref="UnionValueField"/> reads as the whole register. Only a union struct ever consults this;
@@ -1571,6 +1635,11 @@ public static class IlGenerator
                         instructions.Add(conv1);
                     if (wideningConversion is { } widen1)
                         instructions.Add(widen1);
+
+                    // Doar operandul 1, niciodata contorul: la o deplasare operandul 2 e numarul de biti, iar
+                    // CIL cere acolo int32 sau nativ, deci un conv pe el ar face instructiunea invalida.
+                    if (ShiftWidening(instruction, StackTypeOfOperand(instruction, 1, context)) is { } widenShift)
+                        instructions.Add(widenShift);
                 }
 
                 if (!TryEmitZeroAgainstNonInt(instruction, 2, instructions))
