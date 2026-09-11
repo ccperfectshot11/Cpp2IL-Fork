@@ -372,3 +372,12 @@ against the real universe (read from `.universe`), not against the sample. Start
   never analysed by Cpp2IL - every one of their methods is a stub - so `Selector` skips those DLLs and
   the census never sees them. That is the same exclusion the comparison path makes, and it is why the
   denominator is ~72,200 and not the full DLL count.
+
+### One thing to be aware of before running it
+
+The comparison sweep only ever invokes methods whose call graph is closed over a whitelist of
+primitive-only code. The census invokes **whatever is there** - constructors, file helpers, network
+helpers, anything with a body. The arguments are null and empty so most of it faults immediately, but
+nothing structurally prevents a recovered body from writing a file, spawning a process, or calling
+`Environment.Exit` (which would look exactly like a crash: the journal names the method and the next run
+skips it). Run it from a scratch working directory, not from somewhere with files you care about.
