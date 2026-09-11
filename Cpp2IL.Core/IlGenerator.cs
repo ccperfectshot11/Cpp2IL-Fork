@@ -49,6 +49,11 @@ public static class IlGenerator
     // Pushes null rather than a native zero where a reference is expected. On by default, worth 45 methods.
     private static readonly bool PlaceholderNull = Environment.GetEnvironmentVariable("CPP2IL_PLACEHOLDER_NULL") != "0";
 
+    // Loads typeof(T) as the bare handle where the slot is a RuntimeTypeHandle, instead of resolving it to
+    // a Type that the call being built then cannot take. On by default (CPP2IL_TYPE_HANDLE=0 disables):
+    // 594 argument positions over 88 refused methods, none in a body that runs.
+    private static readonly bool TypeHandleAsHandle = Environment.GetEnvironmentVariable("CPP2IL_TYPE_HANDLE") != "0";
+
     // Reads the primitive out of a single-field wrapper struct before arithmetic. On by default: without it
     // the IL is invalid and the JIT refuses the method. CPP2IL_UNWRAP_STRUCTS=0 disables.
     private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
@@ -2445,6 +2450,19 @@ public static class IlGenerator
             case TypeAnalysisContext type:
                 //typeof(T)
                 var corLibScope = module.CorLibTypeFactory.CorLibScope;
+                // Where the slot IS the handle, ldtoken is already the whole argument: the GetTypeFromHandle
+                // the native code performs is the call this operand is being loaded for, and emitting one
+                // here as well leaves `ldtoken T; call GetTypeFromHandle; call GetTypeFromHandle` - the
+                // second handed a Type where it declared a RuntimeTypeHandle. The runtime refuses the body
+                // over it, and no decompiler pass can see it because both calls decompile to typeof(T).
+                // 594 argument positions across 88 of the refused methods, and none in any body that runs.
+                // The fieldof(F) case above already does exactly this for System.RuntimeFieldHandle.
+                if (TypeHandleAsHandle && expectedType?.FullName == "System.RuntimeTypeHandle")
+                {
+                    instructions.Add(CilOpCodes.Ldtoken, type.ToTypeSignature().ToTypeDefOrRef());
+                    break;
+                }
+
                 var typeFromHandle = corLibScope
                     .CreateTypeReference("System", "Type")
                     .CreateMemberReference("GetTypeFromHandle", MethodSignature.CreateStatic(
