@@ -167,12 +167,15 @@ public static class IlGenerator
     }
 
     // Diagnostic-only (env CPP2IL_METADIAG=1): counts the reads out of il2cpp runtime structures that end
-    // as a fabricated zero, by structure and by offset. Two hardcoded tables in this repo disagree about
-    // where Il2CppClass keeps its bitfields - Il2CppClassUsefulOffsets says flags1 is at 0x132, while
-    // MetadataInitGuardRemover looks for initialized_and_no_error at 0x135 and carries a TODO saying it is
-    // probably wrong for some versions - and one guess or the other is why the class-init guard survives
-    // into the output as `num = (IntPtr)0 & 1; if (num == 0) throw null;`. A run with this on says which
-    // offsets this binary actually reads, so the next fix can be measured rather than guessed at.
+    // as a fabricated zero, by structure and by offset. Zero cost when off.
+    //
+    // Intrebarea pentru care a fost scris e inchisa: 0x132 e octetul corect, si nu fiindca diagnosticul
+    // l-a numarat de 5.240 de ori fata de zero la 0x135, ci fiindca sursa libil2cpp a versiunii exacte a
+    // jocului (Unity 2021.3.25f1, IL2CPP 29) spune ca ClassInlines::InitFromCodegen e exact
+    // `if (klass->initialized_and_no_error) return klass;`, iar campul ala e bitul 0 al octetului de la
+    // 0x132. 0x135 n-a fost niciodata candidat. Vezi Il2CppClassUsefulOffsets pentru derivarea completa.
+    //
+    // Ramane util pentru orice alta structura runtime pe care nu am citit-o inca din sursa.
     // Zero cost when off.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long[]> MetadataReads = new();
     private static int _metaDiagHooked;
