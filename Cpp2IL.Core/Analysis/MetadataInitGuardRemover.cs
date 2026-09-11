@@ -24,10 +24,24 @@ public static class MetadataInitGuardRemover
     // 0x132 is also what Il2CppClassUsefulOffsets independently lists as flags1, laid out from
     // interface_offsets_count at 0x12A. With the wrong offset the guard never matched, so it survived into
     // the output as `num = (int)((IntPtr)0 & 1); if (num == 0) throw null;` - 194 occurrences.
+    //
+    // Sursa runtime-ului, versiunea exacta a jocului (2021.3.25f1), inchide subiectul: 0x132 este primul
+    // octet al celor 15 campuri de un bit din Il2CppClass, iar bitul 0 din el este chiar
+    // `initialized_and_no_error`. Forma cautata mai jos - And cu masca 1 peste [klass + 0x132] - este exact
+    // ce compileaza ClassInlines::InitFromCodegen (vm/ClassInlines.h:20):
+    //     if (klass->initialized_and_no_error) return klass;
+    //     return InitFromCodegenSlow(klass);
+    // Deci nu mai e o potrivire empirica, e chiar conditia din sursa. Calculul intreg al asezarii este in
+    // Il2CppClassUsefulOffsets.
     private const long InitialisedFlagOffset64 = 0x132;
     private const long InitialisedFlagOffset32 = 0xBD;
 
-    // Offset of MethodInfo::rgctx_data
+    // Offset of MethodInfo::rgctx_data. Confirmat din `typedef struct MethodInfo` (il2cpp-class-internals.h):
+    // methodPointer 0x00, virtualMethodPointer 0x08, invoker_method 0x10, name 0x18, klass 0x20,
+    // return_type 0x28, parameters 0x30, si abia apoi union { rgctx_data; methodMetadataHandle } la 0x38.
+    // Testul de mai jos - rgctx_data comparat cu zero - este ClassInlines::InitRgcxFromCodegen (linia 27):
+    //     if (method->rgctx_data) return method;
+    //     return InitRgctxFromCodegenSlow(method);
     private const long MethodRgctxOffset64 = 0x38;
     private const long MethodRgctxOffset32 = 0x1C;
 
