@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.ISIL;
@@ -26,12 +26,18 @@ public abstract class BaseCallingConventionResolver
     /// nerezolvat, deci si apelurile care nu se rezolva niciodata capata citiri din sloturi pe care poate
     /// nu le-a scris nimeni; asta tine in viata stocari pe care altfel le-ar sterge eliminarea de cod mort
     /// si poate cobori compilarea in loc s-o urce. E exact forma in care <c>CPP2IL_STACK_PARAMS</c> de
-    /// alaturi s-a dovedit mai rea la masuratoare, deci implicitul nu se schimba fara o rulare.
+    /// alaturi s-a dovedit mai rea la masuratoare - dar aici masuratoarea a iesit invers: 13.354 -> 13.413
+    /// cu patru sloturi, si rata celor fara marker care compileaza 89,8% -> 90,1%. Deci patru e implicitul,
+    /// iar <c>CPP2IL_STACK_ARGS=0</c> revine la comportamentul de dinainte, in care argumentele de pe stiva
+    /// erau inlocuite tacit cu zerouri de PushDefaultOf.
+    ///
+    /// Patru fiindca acopera 99,2% din metode; sase ar da 99,8% si opt 99,9%, dar fiecare slot in plus e o
+    /// citire dintr-un loc pe care poate nu l-a scris nimeni.
     /// </summary>
     private static readonly int StackArgumentSlots =
-        int.TryParse(Environment.GetEnvironmentVariable("CPP2IL_STACK_ARGS"), out var configured) && configured > 0
-            ? Math.Min(configured, 16)
-            : 0;
+        int.TryParse(Environment.GetEnvironmentVariable("CPP2IL_STACK_ARGS"), out var configured)
+            ? Math.Max(0, Math.Min(configured, 16))
+            : 4;
 
     /// <summary>
     /// Sloturile de argument de pe stiva pe care le vede apelantul, in ordinea argumentelor, sau nimic unde
