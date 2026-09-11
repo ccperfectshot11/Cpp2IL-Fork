@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Cpp2IL.Core.Extensions;
@@ -921,8 +921,15 @@ public static class MetadataResolver
     //
     // The unshifted walk is tried first and the shifted one only if it finds nothing, so no offset that
     // resolves today stops resolving, and a binary whose metadata really is boxed-relative keeps
-    // working. CPP2IL_NESTED_RAW=0 goes back to the shifted walk alone.
-    private static readonly bool RawNestedOffsets = System.Environment.GetEnvironmentVariable("CPP2IL_NESTED_RAW") != "0";
+    // working. CPP2IL_NESTED_RAW=1 il porneste; deocamdata e OPRIT implicit.
+    //
+    // Masurat singur: 13.118 fata de 13.229, adica -111 metode STRICT, pentru +78 fara marker. Costul e
+    // aproape in intregime o familie, CS0029, si mereu aceeasi forma: structura exterioara acolo unde
+    // trebuia campul care o incepe, sau invers - AssetGuid contra AssetObjectIdentifier de 74 de ori,
+    // Vector3 sau Vector2 contra float de 61. Offset-ul se rezolva acum corect; ce lipseste e coborarea
+    // in campul care incepe structura pe calea de CITIRE, adica oglinda a ceea ce ScalarFieldStore face
+    // deja pentru scriere. Pana atunci logica recuperata nu se plateste, fiindca nu compileaza.
+    private static readonly bool RawNestedOffsets = System.Environment.GetEnvironmentVariable("CPP2IL_NESTED_RAW") == "1";
 
     /// <summary>
     /// Resolves an offset that does not name a field directly but falls inside a value-type field,
