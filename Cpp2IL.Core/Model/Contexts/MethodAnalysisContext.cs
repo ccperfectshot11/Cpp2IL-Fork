@@ -432,6 +432,12 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, 
         BooleanFlagSimplifier.Run(this);
         DeadCodeEliminator.Run(this);
 
+        // Citirile din bazinul de constante al compilatorului devin constante aici: dupa ce rezolvarea
+        // metadatelor si-a luat partea din adresele absolute (un literal sau un Il2CppClass* nu trebuie
+        // furat si facut intreg), si inainte de propagarea de mai jos, ca sa ajunga la locul in care sunt
+        // folosite - iar FloatLiteralRecovery, si mai tarziu, sa le poata citi ca float dupa tipul acelui loc.
+        ConstantDataRecovery.Run(this);
+
         // Copy/constant propagation belongs in SSA, where one definition dominates all uses and phis
         // make joins explicit, so forwarding a value is an unconditional global substitution.
         SsaSimplifier.Run(this);
