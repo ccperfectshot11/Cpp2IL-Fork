@@ -1,7 +1,7 @@
 # Metode care se comporta DIFERIT fata de jocul care ruleaza.
 # Generat din comparatia Fazei 1 (cod recuperat) cu Faza 2 (joc real), seed 20260910.
-# 275 metode, din 978 comparabile. Anterior 322 din 979.
-# Reparate intre timp: 47 (26 argument pierdut la cmov, 19 latime pe 64 biti, 2 deplasare fara semn). Regresate: 0.
+# 263 metode, din 981 comparabile (73,2% identice). Anterior 275 din 978 (71,9%).
+# Reparate: 13, toate familia FP cu int (latimea deplasarii). Regresata: 1, UdpByteConverter::op_Implicit(Double).
 Cinemachine.AxisState+Recentering::Validate(this:Cinemachine.AxisState+Recentering)->System.Void
 Cinemachine.ClipperLib+Int128::Int128Mul(System.Int64,System.Int64)->Cinemachine.ClipperLib+Int128
 Cinemachine.ClipperLib+Int128::op_GreaterThan(Cinemachine.ClipperLib+Int128,Cinemachine.ClipperLib+Int128)->System.Boolean
@@ -20,23 +20,10 @@ Coffee.UIParticleExtensions.Vector3Extensions::GetScaled(UnityEngine.Vector3,Uni
 Core.VectorUtils::CopyWithY(UnityEngine.Vector2,System.Single)->UnityEngine.Vector2
 Dreamteck.LinearAlgebraUtility::InverseLerp(UnityEngine.Vector3,UnityEngine.Vector3,UnityEngine.Vector3)->System.Single
 LiteNetLib.NetUtils::RelativeSequenceNumber(System.Int32,System.Int32)->System.Int32
-Photon.Deterministic.FP::op_Addition(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Addition(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Division(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Equality(Photon.Deterministic.FP,System.Int32)->System.Boolean
-Photon.Deterministic.FP::op_GreaterThan(Photon.Deterministic.FP,System.Int32)->System.Boolean
 Photon.Deterministic.FP::op_GreaterThan(System.Int32,Photon.Deterministic.FP)->System.Boolean
-Photon.Deterministic.FP::op_GreaterThanOrEqual(Photon.Deterministic.FP,System.Int32)->System.Boolean
 Photon.Deterministic.FP::op_GreaterThanOrEqual(System.Int32,Photon.Deterministic.FP)->System.Boolean
-Photon.Deterministic.FP::op_Implicit(System.Int32)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Inequality(Photon.Deterministic.FP,System.Int32)->System.Boolean
-Photon.Deterministic.FP::op_LessThan(Photon.Deterministic.FP,System.Int32)->System.Boolean
 Photon.Deterministic.FP::op_LessThan(System.Int32,Photon.Deterministic.FP)->System.Boolean
-Photon.Deterministic.FP::op_LessThanOrEqual(Photon.Deterministic.FP,System.Int32)->System.Boolean
 Photon.Deterministic.FP::op_LessThanOrEqual(System.Int32,Photon.Deterministic.FP)->System.Boolean
-Photon.Deterministic.FP::op_Modulus(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Subtraction(Photon.Deterministic.FP,System.Int32)->Photon.Deterministic.FP
-Photon.Deterministic.FP::op_Subtraction(System.Int32,Photon.Deterministic.FP)->Photon.Deterministic.FP
 Photon.Deterministic.FPBounds2::Expand(this:Photon.Deterministic.FPBounds2,Photon.Deterministic.FP)->System.Void
 Photon.Deterministic.FPCollision::CircleIntersectsCircle(Photon.Deterministic.FPVector2,Photon.Deterministic.FP,Photon.Deterministic.FPVector2,Photon.Deterministic.FP)->System.Boolean
 Photon.Deterministic.FPCollision::LineIntersectsLine(Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2,Photon.Deterministic.FPVector2)->System.Boolean
@@ -88,6 +75,7 @@ Photon.Deterministic.RNGSession::Next(this:Photon.Deterministic.RNGSession,Syste
 Photon.Deterministic.RNGSession::NextFP(this:Photon.Deterministic.RNGSession)->Photon.Deterministic.FP
 Photon.Deterministic.RNGSession::NextUInt32(this:Photon.Deterministic.RNGSession)->System.UInt32
 Photon.Deterministic.RNGSession::NextUnbiased(this:Photon.Deterministic.RNGSession,System.UInt32)->System.UInt32
+Photon.Deterministic.UdpByteConverter::op_Implicit(System.Double)->Photon.Deterministic.UdpByteConverter
 Quantum.AssetGuid::get_IsValid(this:Quantum.AssetGuid)->System.Boolean
 Quantum.AssetRef::Equals(this:Quantum.AssetRef,Quantum.AssetRef)->System.Boolean
 Quantum.AssetRefAI::Equals(this:Quantum.AssetRefAI,Quantum.AssetRefAI)->System.Boolean
