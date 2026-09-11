@@ -424,6 +424,11 @@ public static class MethodKeys
         return builder.ToString();
     }
 
+    // Citit o singura data: Normalise sta pe drumul fierbinte al indexarii din faza 2, unde este chemat
+    // de cateva sute de mii de ori.
+    private static readonly bool StripGlobalNamespace =
+        Environment.GetEnvironmentVariable("CPP2IL_VERIFY_IL2CPP_GLOBAL_NS") != "0";
+
     private static string Normalise(Type type)
     {
         if (type == null)
@@ -431,10 +436,20 @@ public static class MethodKeys
 
         var name = type.FullName ?? type.Name;
 
-        // Il2CppInterop escapes namespaces that would collide with the BCL by prefixing them, so the
-        // game's own System.Object arrives as Il2CppSystem.Object. Stripping the prefix is what lets the
-        // same method have the same key in both hosts.
-        if (name.StartsWith("Il2Cpp", StringComparison.Ordinal))
+        // Un tip FARA namespace in joc nu ajunge fara namespace in interop: Il2CppInterop il pune in
+        // namespace-ul "Il2Cpp", deci SRMath vine ca "Il2Cpp.SRMath". Taind doar cele sase litere ramane
+        // ".SRMath" - cu punctul in fata - iar faza 1 scrie "SRMath", asa ca perechea nu se formeaza
+        // niciodata si metoda cade tacut in "only in phase1".
+        //
+        // Masurat pe cele doua fisiere reale: din 247 de metode la care faza 2 nu a raspuns, 185 sunt
+        // tipuri fara namespace, si ZERO din cele 978 la care a raspuns sunt. Nu e o coincidenta - este
+        // rata de pierdere 100%. In build-ul jocului sunt 1.603 tipuri puse in namespace-ul "Il2Cpp",
+        // iar cu punctul taiat toate cele 1.761 de enum-uri recuperate se potrivesc pe nume cu ale
+        // jocului, ceea ce confirma forma taieturii. Niciun tip recuperat nu incepe cu "Il2Cpp", deci
+        // faza 1 nu se misca deloc.
+        if (StripGlobalNamespace && name.StartsWith("Il2Cpp.", StringComparison.Ordinal))
+            name = name.Substring("Il2Cpp.".Length);
+        else if (name.StartsWith("Il2Cpp", StringComparison.Ordinal))
             name = name.Substring("Il2Cpp".Length);
 
         return name;

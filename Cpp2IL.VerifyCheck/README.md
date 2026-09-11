@@ -40,6 +40,22 @@ now) and `.skip` is everything that killed or hung a previous run. An access vio
 and `Thread.Abort` does not exist on .NET Core, so surviving a hostile body means recording it before
 calling it and skipping it next time. Delete both to start clean.
 
+### Comutatoare de mediu
+
+Fiecare latire a selectiei sta dupa cate o variabila, ca o rulare A/B sa se poata face pe acelasi binar.
+Raportul de selectie isi tipareste starea pe linia `Widenings`, ca sa nu ramana doua fisiere cu numere
+diferite si fara explicatie de unde vin.
+
+| variabila | implicit | ce face |
+|---|---|---|
+| `CPP2IL_VERIFY_ENUMS` | pornit (`=0` opreste) | accepta un enum ca pe intregul de sub el - la parametru, la receptor si la tipul intors. Masurat pe `out_w56`: selectia trece de la 1.395 la 1.828 de metode. Simetria e verificata pe metadate: toate cele 1.761 de enum-uri recuperate exista si in joc, cu acelasi tip de baza. |
+| `CPP2IL_VERIFY_BCL_LEAF` | oprit (`=1` porneste) | lasa apelurile catre cativa membri **puri** ai bibliotecii gazdei (`IntPtr.Zero`, `Math.Abs/Min/Max/Sign/Floor/Ceiling/Truncate/Round/Sqrt`, `BitConverter`) sa fie frunze ale grafului, in loc sa ceara ca tinta sa fie si ea in lista alba. Masurat: +151 singur, +227 peste enum-uri. Oprit implicit pentru ca egalitatea bit-cu-bit intre .NET si mscorlib-ul IL2CPP se poate doar masura, nu deduce. |
+| `CPP2IL_VERIFY_IL2CPP_GLOBAL_NS` | pornit (`=0` opreste) | **faza 2**: taie prefixul `Il2Cpp.` de la tipurile pe care jocul le tine fara namespace. Fara el niciun astfel de tip nu se potriveste niciodata - masurat, 185 de metode pierdute din 247. |
+| `CPP2IL_VERIFY_INDEX_CTORS` | pornit (`=0` opreste) | **faza 2**: indexeaza si constructorii, pe care `GetMethods` nu ii intoarce niciodata. Fara el, 92 de chei `.ctor` cerute si zero raspunse. |
+
+Ultimele doua sunt citite in procesul JOCULUI, deci trebuie puse inainte sa porneasca el - `run-phase2.ps1`
+lasa mediul sa se mosteneasca, la fel ca `CPP2IL_VERIFY_AUTO`.
+
 ## What gets selected
 
 A method qualifies when **all** of this holds:
@@ -50,8 +66,11 @@ A method qualifies when **all** of this holds:
    test decides both. Any other receiver (a class, or a struct that reaches a reference) stays out: it
    would need a heap graph the Phase 2 host could not build identically;
 2. every parameter type and the return type is a primitive (`bool char sbyte byte short ushort int uint
-   long ulong float double`) or a struct made of them transitively - no enums, no pointers, no by-ref, no
-   arrays, no generics. A `void` **static** is excluded because a signature over one would hash the
+   long ulong float double`), a struct made of them transitively, or an **enum over an integer**
+   (`CPP2IL_VERIFY_ENUMS`) - no pointers, no by-ref, no arrays, no generics, no strings. An enum is
+   admitted because it is an integer at runtime and the two hosts genuinely agree on it: checked against
+   the game's own metadata, all 1,761 enums in the recovered build exist in `Il2CppAssemblies`, match by
+   normalised name, and have the same underlying integer - zero exceptions. A `void` **static** is excluded because a signature over one would hash the
    inputs and nothing else; a `void` **instance** method is not, because it still has somewhere to put an
    answer - its receiver, which is read back after the call. One that turns out never to write there is
    flagged `noObservableOutput` and dropped from `--compare` rather than counted as agreement;
@@ -69,6 +88,41 @@ reads `FPLut`'s tables; flagging it records that the comparison for those method
 hosts' class constructors having produced the same tables. The flag is **transitive**: a method whose own
 body is clean but which calls one that reads a static carries it too, because the comparison for that
 method rests on the same cctor.
+
+### Ce ramane pe dinafara, si de ce
+
+Numarul de comportament descrie o felie, si felia trebuie spusa cinstit. Numarate pe `out_w56`, peste
+cele 72.199 de metode cu corp, primul motiv de respingere al fiecareia:
+
+| motiv | metode |
+|---|---|
+| metoda de instanta pe o **clasa** | 32.993 |
+| parametru care nu e numai-primitive | 28.644 |
+| generic | 3.330 |
+| metoda de instanta pe o structura care ajunge la o referinta | 1.380 |
+| tip intors care nu e numai-primitive | 1.198 |
+| apel nerezolvabil / in afara listei albe | 1.860 |
+| constructor static | 878 |
+| static care nu intoarce nimic | 516 |
+
+Doua dintre acestea nu sunt lene, ci asimetrie adevarata, si de aceea raman nefacute:
+
+* **clasele** (32.993 receptori + 14.895 parametri, adica doua treimi din tot codul). Il2CppInterop nu
+  proiecteaza o clasa a jocului ca pe o clasa cu campurile ei, ci ca pe un invelis peste un pointer, cu
+  campurile ajunse proprietati. `ValueShape` merge pe campurile de instanta, deci cele doua gazde ar
+  descrie obiecte diferite sub acelasi nume. Ar trebui o forma bazata pe NUME de campuri, plus un
+  constructor recuperat - adica cod neverificat - rulat ca sa cladeasca receptorul. Alta treaba, nu una
+  ascunsa aici;
+* **tablourile** (777 de parametri). Il2CppInterop proiecteaza `T[]` ca `Il2CppStructArray<T>`, deci
+  cheia din faza 2 ar arata altfel decat cea din faza 1 si perechea nu s-ar forma niciodata.
+
+Doua au fost masurate si lasate pentru ca nu merita pretul, nu pentru ca ar fi imposibile:
+
+* **`string`** ar aduce +40 de metode singur si +166 peste celelalte latiri, desi 4.710 metode sunt
+  *intai* respinse din cauza lui - restul sunt oprite si de altceva. Ar cere o frunza de tip referinta
+  in `ValueShape`, care azi este numai pe tipuri valoare;
+* **`ref`/`out` pe primitive** ar aduce +14. Reflection scrie inapoi in tabloul de argumente, deci
+  mecanismul exista, dar 14 metode nu platesc canalul de iesire in plus din hash.
 
 ## What a signature is
 

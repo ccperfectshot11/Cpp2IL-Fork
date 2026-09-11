@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 
 namespace Cpp2IL.VerifyCore;
@@ -30,7 +31,7 @@ public enum LeafKind
 // exactly what a shape is.
 public sealed class ValueShape
 {
-    private ValueShape(Type type, LeafKind kind)
+    private ValueShape(Type type, LeafKind kind, Type enumUnderlying = null)
     {
         Type = type;
         Kind = kind;
@@ -38,6 +39,7 @@ public sealed class ValueShape
         Fields = EmptyFields;
         Children = EmptyShapes;
         LeafCount = 1;
+        EnumUnderlying = enumUnderlying;
     }
 
     private ValueShape(Type type, FieldInfo[] fields, ValueShape[] children)
@@ -65,6 +67,10 @@ public sealed class ValueShape
     // carries no information - the fuzzer still emits it, it just contributes nothing to the hash.
     public int LeafCount { get; }
 
+    // Nenul doar cand frunza este un enum: tipul intreg de sub el. Valoarea generata este intregul,
+    // dar apelul are nevoie de enum, iar hash-ul are nevoie iar de intreg - vezi Materialise si Absorb.
+    public Type EnumUnderlying { get; }
+
     public static ValueShape For(Type type) => Build(type, new HashSet<Type>(), 0);
 
     private static ValueShape Build(Type type, HashSet<Type> open, int depth)
@@ -82,10 +88,10 @@ public sealed class ValueShape
         if (kind.HasValue)
             return new ValueShape(type, kind.Value);
 
-        // An enum IS a primitive at runtime, but Il2CppInterop projects the game's enums as its own
-        // generated types, so admitting them would force a name-mapping table between the two hosts to
-        // agree on what a value even is. The selector keeps them out; this mirrors that decision.
-        if (type.IsEnum || type.IsGenericType || type.ContainsGenericParameters)
+        if (type.IsEnum)
+            return EnumLeaf(type);
+
+        if (type.IsGenericType || type.ContainsGenericParameters)
             return null;
 
         // A struct cannot contain itself, but a struct recovered from a wrong field layout can appear to,
@@ -112,6 +118,31 @@ public sealed class ValueShape
         {
             open.Remove(type);
         }
+    }
+
+    // Un enum ESTE un intreg la rulare, si - spre deosebire de ce spunea nota de dinainte - cele doua
+    // gazde SUNT de acord asupra lui, fara nicio tabela de corespondenta. Verificat pe metadatele reale,
+    // nu presupus: toate cele 1.761 de enum-uri din build-ul recuperat exista si in Il2CppAssemblies ale
+    // jocului, toate 1.761 se potrivesc pe nume dupa ce MethodKeys.Normalise taie prefixul, si toate
+    // 1.761 au ACELASI tip intreg dedesubt. Zero nepotriviri. Deci o frunza de enum genereaza aceiasi
+    // biti pe ambele parti.
+    //
+    // Dinadins NU este pus dupa un comutator, desi latirea corespunzatoare din Selector este: selectia
+    // decide ce metode sunt CERUTE, iar faza 2 raspunde doar la ce i se cere. Daca doar una dintre
+    // gazde ar sti sa construiasca un enum, metoda ar fi masurata pe o singura parte si ar cadea din
+    // comparatie fara sa spuna nimic - exact asimetria pe care restul fisierului o evita.
+    private static ValueShape EnumLeaf(Type type)
+    {
+        var underlying = Enum.GetUnderlyingType(type);
+        var kind = KindOf(underlying);
+
+        // Numai intregi. Un enum pe virgula mobila nu este legal in C# si nu exista niciunul in build,
+        // dar un enum recuperat gresit ar putea arata asa, si Enum.ToObject nu stie sa-l construiasca.
+        if (!kind.HasValue || kind.Value == LeafKind.Single || kind.Value == LeafKind.Double
+            || kind.Value == LeafKind.Bool || kind.Value == LeafKind.Char)
+            return null;
+
+        return new ValueShape(type, kind.Value, underlying);
     }
 
     // Declaration order, not reflection order: GetFields makes no ordering promise, and a shape whose
@@ -147,7 +178,13 @@ public sealed class ValueShape
     public object Materialise(object[] leaves, ref int next)
     {
         if (IsLeaf)
-            return leaves[next++];
+        {
+            var leaf = leaves[next++];
+
+            // Reflection refuza un Int32 acolo unde semnatura cere enum-ul, asa ca valoarea trebuie
+            // imbracata inapoi in tipul ei. Bitii raman exact aceiasi.
+            return EnumUnderlying == null ? leaf : Enum.ToObject(Type, leaf);
+        }
 
         var box = Activator.CreateInstance(Type);
         for (var i = 0; i < Fields.Length; i++)
@@ -164,7 +201,12 @@ public sealed class ValueShape
     {
         if (IsLeaf)
         {
-            hash.AbsorbLeaf(Kind, value);
+            // Dezbracat inapoi la intregul de dedesubt: un enum in cutie nu se poate despacheta direct
+            // in int - conversia arunca - iar Bits.Of lucreaza pe bitii primitivei. Conversia se face
+            // catre TIPUL LUI de baza, nu catre long, ca sa nu dea peste cap un enum pe UInt64.
+            hash.AbsorbLeaf(Kind, EnumUnderlying == null || value == null
+                ? value
+                : Convert.ChangeType(value, EnumUnderlying, CultureInfo.InvariantCulture));
             return;
         }
 

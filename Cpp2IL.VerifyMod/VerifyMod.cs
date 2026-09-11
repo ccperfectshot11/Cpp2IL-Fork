@@ -302,6 +302,23 @@ public class VerifyMod : MelonMod
         reasons[reason] = count + 1;
     }
 
+    private static readonly bool IndexConstructors =
+        Environment.GetEnvironmentVariable("CPP2IL_VERIFY_INDEX_CTORS") != "0";
+
+    /// <summary>
+    /// Every method of one type, filed under its key - plus its constructors, which are NOT methods.
+    ///
+    /// GetMethods nu intoarce niciodata un .ctor: intoarce numai MethodInfo, iar un constructor este
+    /// ConstructorInfo. Cat a lipsit bucata a doua, fiecare constructor cerut de faza 1 se raporta ca
+    /// "type is there, method is not" - masurat pe fisierele reale, 92 de chei ".ctor" cerute si ZERO
+    /// raspunse, adica rata de pierdere 100%.
+    ///
+    /// Merita indexati, nu ocoliti: un .ctor de structura este chiar cazul pentru care exista Tier 2 -
+    /// nu intoarce nimic, dar scrie prin receptor, si scrisul ACELA este comportamentul lui. Faza 1 ii
+    /// masoara deja asa, fara sa ceara nimic special: isi rezolva metodele dupa token si primeste
+    /// ConstructorInfo, iar MethodBase.Invoke(receptor, argumente) pe un constructor il ruleaza PESTE
+    /// instanta primita in loc sa aloce una noua.
+    /// </summary>
     private static void IndexType(Type type, Dictionary<string, MethodBase> index)
     {
         MethodInfo[] methods;
@@ -315,24 +332,45 @@ public class VerifyMod : MelonMod
         }
 
         foreach (var method in methods)
+            IndexMember(index, method);
+
+        if (!IndexConstructors)
+            return;
+
+        ConstructorInfo[] constructors;
+        try
         {
-            if (method.IsGenericMethodDefinition || method.ContainsGenericParameters)
-                continue;
-
-            string key;
-            try
-            {
-                key = MethodKeys.For(method);
-            }
-            catch (Exception)
-            {
-                continue;
-            }
-
-            // First one wins. A duplicate key means two methods Phase 1 could not tell apart either, so
-            // choosing between them here would be guessing which one Phase 1 measured.
-            if (!index.ContainsKey(key))
-                index[key] = method;
+            // Numai cei de instanta: .cctor nu este o functie a argumentelor lui si selectorul il refuza
+            // oricum, deci indexarea lui ar fi doar zgomot.
+            constructors = type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
         }
+        catch (Exception)
+        {
+            return;
+        }
+
+        foreach (var constructor in constructors)
+            IndexMember(index, constructor);
+    }
+
+    private static void IndexMember(Dictionary<string, MethodBase> index, MethodBase method)
+    {
+        if (method.IsGenericMethodDefinition || method.ContainsGenericParameters)
+            return;
+
+        string key;
+        try
+        {
+            key = MethodKeys.For(method);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        // First one wins. A duplicate key means two methods Phase 1 could not tell apart either, so
+        // choosing between them here would be guessing which one Phase 1 measured.
+        if (!index.ContainsKey(key))
+            index[key] = method;
     }
 }

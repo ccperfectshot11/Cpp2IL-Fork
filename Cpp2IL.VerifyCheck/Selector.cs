@@ -76,6 +76,55 @@ internal static class Selector
         "System.Int32", "System.UInt32", "System.Int64", "System.UInt64", "System.Single", "System.Double",
     };
 
+    // Tipurile intregi pe care se poate aseza un enum. Oglinda exacta a lui ValueShape.EnumLeaf: daca
+    // cele doua liste ar fi de acord doar aproximativ, o metoda ar fi selectata aici si respinsa acolo
+    // la rulare, adica exact scenariul de care avertizeaza nota de deasupra lui IsSafeValue.
+    private static readonly HashSet<string> EnumUnderlyings = new(StringComparer.Ordinal)
+    {
+        "System.SByte", "System.Byte", "System.Int16", "System.UInt16",
+        "System.Int32", "System.UInt32", "System.Int64", "System.UInt64",
+    };
+
+    // LATIRE 1: un enum este un intreg, si cele doua gazde sunt de acord asupra lui. Verificat pe
+    // metadate, nu presupus - vezi nota lunga din ValueShape.EnumLeaf: 1.761 din 1.761 de enum-uri
+    // recuperate au acelasi tip de baza ca ale jocului si acelasi nume normalizat. Masurat pe out_w56,
+    // selectia trece de la 1.395 la 1.828 de metode (+433, adica +31%).
+    //
+    // Comutatorul opreste SELECTIA lor, nu capacitatea de a le construi: ValueShape le stie neconditionat,
+    // pentru ca faza 2 raspunde doar la ce ii cere faza 1 si nu trebuie sa depinda de o variabila de
+    // mediu pusa in alt proces.
+    private static readonly bool AdmitEnums =
+        Environment.GetEnvironmentVariable("CPP2IL_VERIFY_ENUMS") != "0";
+
+    // LATIRE 2: un apel catre o functie PURA din biblioteca gazdei nu leaga metoda de starea jocului,
+    // deci nu are de ce sa strice inchiderea grafului de apeluri.
+    //
+    // Linia adevarata nu este "din System" ci "pe care faza 1 o executa cu adevarat". Un apel catre
+    // UnityEngine.Mathf.Sin este otravit: Cpp2IL nu analizeaza modulele Unity, deci faza 1 ar rula ciotul
+    // (ldc.r4 0; ret) iar jocul ar rula functia reala, si diferenta raportata ar fi a ciotului, nu a
+    // metodei masurate. In schimb mscorlib NU este incarcat din directorul recuperat - vezi
+    // RecoveredAssemblyContext.HostOwned - deci faza 1 leaga aceste apeluri de implementarea reala .NET.
+    //
+    // Lista este pe MEMBRU, nu pe tip, si contine numai operatii exacte pe biti: radacina patrata si
+    // rotunjirile sunt specificate de IEEE-754 si dau acelasi rezultat pe orice runtime, pe cand Sin,
+    // Pow si Exp merg prin libm si pot diferi pe ultimul bit intre .NET si IL2CPP. Masurat: +151 metode
+    // singura, +227 peste enum-uri (1.828 -> 2.055). Lista pe tip intreg ar fi dat exact acelasi numar,
+    // ceea ce spune ca tot castigul vine din membrii de mai jos si din nimic dubios.
+    //
+    // Implicit OPRITA: spre deosebire de enum-uri, egalitatea bit-cu-bit dintre .NET si mscorlib-ul
+    // IL2CPP nu poate fi dovedita din metadate, ci doar masurata printr-o rulare.
+    private static readonly bool AllowPureBclLeaf =
+        Environment.GetEnvironmentVariable("CPP2IL_VERIFY_BCL_LEAF") == "1";
+
+    private static readonly HashSet<string> PureBclMembers = new(StringComparer.Ordinal)
+    {
+        "System.IntPtr::get_Zero", "System.UIntPtr::get_Zero",
+        "System.Math::Abs", "System.Math::Min", "System.Math::Max", "System.Math::Sign",
+        "System.Math::Floor", "System.Math::Ceiling", "System.Math::Truncate",
+        "System.Math::Round", "System.Math::Sqrt",
+        "System.BitConverter::DoubleToInt64Bits", "System.BitConverter::Int64BitsToDouble",
+    };
+
     // Opcodes that can reach memory the harness does not control, or transfer control somewhere it cannot
     // see. calli and ldftn hand execution to an address; localloc/cpblk/initblk write through raw
     // pointers; newarr and newobj on a class allocate a heap graph the Phase 2 host could never
@@ -87,6 +136,11 @@ internal static class Selector
         CilCode.Cpblk, CilCode.Initblk, CilCode.Newarr, CilCode.Arglist, CilCode.Mkrefany,
         CilCode.Refanyval, CilCode.Ldsflda, CilCode.Stsfld,
     ];
+
+    // Tiparit in raport ca o rulare A/B sa se poata citi singura din log: fara asta, doua fisiere cu
+    // numere diferite nu spun care comutator le-a produs.
+    public static string ActiveWidenings =>
+        (AdmitEnums ? "enums=ON" : "enums=off") + ", " + (AllowPureBclLeaf ? "bcl-leaf=ON" : "bcl-leaf=off");
 
     public static SelectionResult Select(string dllDir, string filter, bool allowStatics)
     {
@@ -348,6 +402,15 @@ internal static class Selector
                 return Fail(candidate, "unresolvable callee");
 
             var calleeAssembly = resolved.DeclaringType?.DeclaringModule?.Assembly?.Name?.Value ?? "";
+
+            // Frunza de graf: apelul exista, dar nu mai cere ca tinta sa fie si ea in lista alba. Numai
+            // pentru membrii puri ai bibliotecii GAZDEI - vezi nota de la PureBclMembers pentru de ce
+            // linia trece pe acolo si nu pe "orice din System".
+            if (AllowPureBclLeaf
+                && RecoveredAssemblyContext.IsHostOwned(calleeAssembly)
+                && PureBclMembers.Contains((resolved.DeclaringType?.FullName ?? "") + "::" + calleeName))
+                continue;
+
             candidate.Callees.Add(calleeAssembly + "|0x" + resolved.MetadataToken.ToUInt32().ToString("X8"));
         }
 
@@ -407,8 +470,19 @@ internal static class Selector
         try { definition = signature.Resolve(context); }
         catch { return false; }
 
-        if (definition == null || !definition.IsValueType || definition.IsEnum || definition.GenericParameters.Count > 0)
+        if (definition == null || !definition.IsValueType || definition.GenericParameters.Count > 0)
             return false;
+
+        if (definition.IsEnum)
+        {
+            // Enum-ul nu trece prin bucla de campuri de mai jos, desi value__ ar trece-o: forma lui in
+            // ValueShape este o FRUNZA, nu o structura cu un camp, si cele doua trebuie sa spuna acelasi
+            // lucru despre cate frunze are valoarea - altfel maturarea ar genera alt numar de valori pe
+            // fiecare parte.
+            var admitted = AdmitEnums && EnumUnderlyings.Contains(EnumUnderlyingName(definition));
+            cache[full] = admitted;
+            return admitted;
+        }
 
         foreach (var field in definition.Fields)
         {
@@ -421,6 +495,18 @@ internal static class Selector
 
         cache[full] = true;
         return true;
+    }
+
+    // Tipul de sub un enum este singurul lui camp de instanta - value__. Citit din campuri si nu dintr-un
+    // ajutor al bibliotecii, pentru ca aici metadatele sunt recuperate dintr-un binar si un enum fara
+    // niciun camp este o posibilitate reala, nu o imposibilitate teoretica.
+    private static string EnumUnderlyingName(TypeDefinition definition)
+    {
+        foreach (var field in definition.Fields)
+            if (!field.IsStatic)
+                return field.Signature?.FieldType?.FullName ?? "";
+
+        return "";
     }
 
     // Measurement only, deliberately not a selection path. Tier 2's other half would fuzz instance

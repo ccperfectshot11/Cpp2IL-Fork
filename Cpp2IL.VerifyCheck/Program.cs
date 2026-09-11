@@ -131,6 +131,7 @@ internal static class Program
 
         Console.WriteLine();
         Console.WriteLine("================ TIER 1: DIFFERENTIAL FUZZ - SELECTION ================");
+        Console.WriteLine($"Widenings                  : {Selector.ActiveWidenings}");
         Console.WriteLine($"DLLs scanned               : {selection.DllsScanned:N0}   (unreadable: {selection.DllsUnreadable}, stubbed by design: {selection.DllsStubbed})");
         Console.WriteLine($"Methods with a body        : {selection.MethodsWithBody:N0}");
         Console.WriteLine($"  body-safe (own checks)   : {selection.All.Count(c => c.BodySafe):N0}  ({P(selection.All.Count(c => c.BodySafe), selection.MethodsWithBody):F2}%)");
