@@ -54,6 +54,15 @@ public static class IlGenerator
     // 594 argument positions over 88 refused methods, none in a body that runs.
     private static readonly bool TypeHandleAsHandle = Environment.GetEnvironmentVariable("CPP2IL_TYPE_HANDLE") != "0";
 
+    // Emits default(T) rather than the literal 0 where a zero constant reaches a struct-typed slot. On by
+    // default (CPP2IL_ZERO_STRUCT=0 disables): 67 argument positions over 37 refused methods.
+    private static readonly bool ZeroAsDefaultStruct = Environment.GetEnvironmentVariable("CPP2IL_ZERO_STRUCT") != "0";
+
+    // Lets the two above name a struct that lives in another assembly. Separate switch because it widens
+    // PushPlaceholderZero everywhere it is already called from, not just at the site added for it
+    // (CPP2IL_REF_STRUCT_DEFAULT=0 disables).
+    private static readonly bool ReferencedStructsAsDefault = Environment.GetEnvironmentVariable("CPP2IL_REF_STRUCT_DEFAULT") != "0";
+
     // Reads the primitive out of a single-field wrapper struct before arithmetic. On by default: without it
     // the IL is invalid and the JIT refuses the method. CPP2IL_UNWRAP_STRUCTS=0 disables.
     private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
@@ -2112,6 +2121,31 @@ public static class IlGenerator
     }
 
 
+    /// <summary>
+    /// A struct that can be named in IL and zeroed with initobj: a real value type, not one of the
+    /// synthetic il2cpp contexts (each of those IS a pointer), and not a primitive, whose stand-in is the
+    /// literal the caller would have emitted anyway.
+    ///
+    /// A type from another assembly counts. The check used to insist on an AsmResolverType, which only a
+    /// type this run rebuilt ever carries, and that excluded exactly the parameters this matters for -
+    /// Vector2, Color, CancellationToken are all references out. ReferencedTypeAnalysisContext is let
+    /// through the same way, and for the same reason, as in CastMismatchedValue.
+    /// </summary>
+    private static bool IsNamedValueType(TypeAnalysisContext? expectedType) =>
+        expectedType is { IsValueType: true }
+        && expectedType.ToTypeSignature() is not CorLibTypeSignature
+        && expectedType is not (RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
+            or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
+            or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext or ByRefTypeAnalysisContext)
+        && (expectedType.GetExtraData<TypeDefinition>("AsmResolverType") != null
+            // An enum is its underlying integer once on the stack, so a literal 0 already fits one and
+            // rewriting it would be three instructions buying nothing. IntPtr the same: il2cpp metadata
+            // resolves it as an ordinary struct rather than the primitive, and the zero it holds is the
+            // one the emitter already writes below.
+            || (ReferencedStructsAsDefault && expectedType is ReferencedTypeAnalysisContext
+                && !expectedType.IsEnumType
+                && expectedType.FullName is not ("System.IntPtr" or "System.UIntPtr")));
+
     // The stand-in pushed wherever a value could not be recovered. It used to be `ldc.i4.0; conv.i`
     // unconditionally, which is a native int, and the decompiler prints that as `(IntPtr)0`. Where the
     // surrounding code is ordinary integer maths the result does not compile - `num = (int)((IntPtr)0 & 16)`
@@ -2124,11 +2158,7 @@ public static class IlGenerator
         // C#: the JIT refuses the whole method. That is what makes `FPMatrix2x2.get_Zero` and a large share
         // of the Quantum maths unrunnable - 120 of 157 fuzzable methods there throw InvalidProgramException.
         // A zeroed local of the right type is the stand-in that actually has that type.
-        if (expectedType is { IsValueType: true } && expectedType.ToTypeSignature() is not CorLibTypeSignature
-            && expectedType is not (RuntimeClassTypeAnalysisContext or RgctxTableTypeAnalysisContext
-                or MethodRgctxTableTypeAnalysisContext or StaticFieldStorageTypeAnalysisContext
-                or RuntimeMethodInfoAnalysisContext or RuntimeFieldInfoAnalysisContext or ByRefTypeAnalysisContext)
-            && expectedType.GetExtraData<TypeDefinition>("AsmResolverType") != null)
+        if (expectedType != null && IsNamedValueType(expectedType))
         {
             var zeroed = ScratchLocal(method, expectedType.ToTypeSignature());
 
@@ -2297,6 +2327,23 @@ public static class IlGenerator
             return;
         }
 
+        // The same rewrite one type over: a zeroed struct also reaches us as an integer zero, because
+        // `xor reg,reg` in front of the call is all il2cpp emits for default(T). Left as ldc.i4.0 the
+        // argument is an int32 where the callee declared a struct, and the runtime refuses the caller -
+        // Vector2, Color and CancellationToken are the shapes that show up. PushPlaceholderZero already
+        // knows how to write the stand-in with the right type; what it does not do is reach a type from
+        // another assembly, and almost every struct parameter here is one, so the reference case is let
+        // through the same way CastMismatchedValue lets it through. Only zero: a non-zero constant is
+        // not a struct value this pass could honestly invent.
+        if (ZeroAsDefaultStruct && IsZeroConstant(operand)
+            && expectedType is { IsValueType: true, IsEnumType: false }
+            && expectedType.FullName is not ("System.IntPtr" or "System.UIntPtr")
+            && IsNamedValueType(expectedType))
+        {
+            PushPlaceholderZero(expectedType, method, instructions);
+            return;
+        }
+
         // Ahead of the switch because it replaces the load rather than adding to it: what the callee asked
         // for is the object's class, and the switch would load the object.
         if (TryLoadClassOfObject(operand, expectedType, method, locals))
@@ -2450,6 +2497,7 @@ public static class IlGenerator
             case TypeAnalysisContext type:
                 //typeof(T)
                 var corLibScope = module.CorLibTypeFactory.CorLibScope;
+
                 // Where the slot IS the handle, ldtoken is already the whole argument: the GetTypeFromHandle
                 // the native code performs is the call this operand is being loaded for, and emitting one
                 // here as well leaves `ldtoken T; call GetTypeFromHandle; call GetTypeFromHandle` - the
