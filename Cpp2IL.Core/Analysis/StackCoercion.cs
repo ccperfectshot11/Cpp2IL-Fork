@@ -758,6 +758,14 @@ public static class StackCoercion
     {
         var wanted = KindOf(expected);
 
+        // A managed pointer meeting a struct slot stays a mismatch on purpose. il2cpp does hand a wide
+        // value type to a by-value parameter by address, so an ldobj would be the right repair where the
+        // pointer points at the type the slot holds - but it never does here: of the 1,851 such argument
+        // positions in the corpus, across 1,006 methods, not one has a referent matching the expected type.
+        // They are addresses of an int32 or of an unrelated struct, which says the width the inference gave
+        // the local is wrong one layer below this pass. Dereferencing anyway would reinterpret the bytes and
+        // hand the callee a value the native code never passed - a body that runs and lies, which is worse
+        // than one the runtime refuses.
         if (wanted is Kind.Unknown or Kind.ByRef || value.Kind is Kind.Unknown or Kind.ByRef)
             return null;
 
