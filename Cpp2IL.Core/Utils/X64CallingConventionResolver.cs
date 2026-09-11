@@ -71,6 +71,37 @@ public class X64CallingConventionResolver : BaseCallingConventionResolver
 
     protected override bool UsesShadowedArgumentSlots(ApplicationAnalysisContext app) => app.Binary is PE;
 
+    // Zona de argumente de iesire, masurata de la rsp asa cum sta el la apel. Sub msvc incepe dupa cei 32
+    // de octeti de spatiu de rezerva pe care apelantul ii lasa pentru cele patru registre, deci primul
+    // argument de pe stiva e la [rsp+0x20]; sub SysV nu exista spatiu de rezerva si incepe la [rsp].
+    //
+    // Nu e acelasi numar cu StackArgumentBase de mai sus, si tocmai de-aia sunt doua: acolo e vorba de
+    // callee, care isi citeste argumentele dupa ce apelul a impins adresa de retur, deci de la +0x28. Aici
+    // suntem inainte de apel, in cadrul apelantului, unde adresa de retur inca nu exista.
+    private const int PeOutgoingArgumentBase = 0x20;
+
+    // Numarul de sloturi e fixat la pornire, deci si listele sunt. HasRawArgumentLayout se cheama pentru
+    // fiecare apel din fiecare metoda, si acolo doar lungimea conteaza, asa ca nu merita alocata o lista
+    // noua de fiecare data.
+    private static readonly StackOffset[] PeStackSlots = BuildStackSlots(PeOutgoingArgumentBase);
+    private static readonly StackOffset[] SysVStackSlots = BuildStackSlots(0);
+
+    private static StackOffset[] BuildStackSlots(int start)
+    {
+        var count = RequestedStackArgumentSlots;
+        if (count == 0)
+            return [];
+
+        var slots = new StackOffset[count];
+        for (var i = 0; i < count; i++)
+            slots[i] = new StackOffset(start + i * ptrSize);
+
+        return slots;
+    }
+
+    protected override StackOffset[] RawStackSlots(ApplicationAnalysisContext app)
+        => app.Binary is PE ? PeStackSlots : SysVStackSlots;
+
     public override IOperand[] ResolveForManaged(MethodAnalysisContext ctx)
     {
         // if (ctx.AppContext.Binary.is32Bit)

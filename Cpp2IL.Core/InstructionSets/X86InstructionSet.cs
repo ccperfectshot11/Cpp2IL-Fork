@@ -320,7 +320,7 @@ public class X86InstructionSet : Cpp2IlInstructionSet
         void AddIndirectJmp(Instruction source)
         {
             var call = Add(source.IP, ISIL.OpCode.IndirectJump, ConvertOperand(source, 0), new ISIL.Register(null, "rax") /* return value */);
-            call.AddOperands(CallingConventions.ResolveForUnmanaged(context.AppContext, source.IP));
+            call.AddOperands(CallingConventions.ResolveForUnmanaged(context.AppContext, source.IP, isTailCall: true));
         }
 
         switch (instruction.Mnemonic)

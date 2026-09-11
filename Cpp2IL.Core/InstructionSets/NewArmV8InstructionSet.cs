@@ -760,7 +760,7 @@ public class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 {
                     // tail call or jump table, either way it leaves the method
                     var jump = Add(address, OpCode.IndirectJump, ConvertOperand(instruction, 0), new Register(null, "X0") /* return value */);
-                    jump.AddOperands(CallingConventions.ResolveForUnmanaged(context.AppContext, address));
+                    jump.AddOperands(CallingConventions.ResolveForUnmanaged(context.AppContext, address, isTailCall: true));
                     break;
                 }
             case Arm64Mnemonic.B:
