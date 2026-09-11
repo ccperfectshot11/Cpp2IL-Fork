@@ -259,7 +259,12 @@ public static class MetadataResolver
                 if (byRefStruct != null)
                     owner = byRefStruct;
 
-                var searchAddend = byRefStruct != null ? memory.Addend + ValueTypeHeaderSize : memory.Addend;
+                // Only where the metadata really is boxed-relative. Where it is not - see
+                // RawNestedOffsets - a byref points at the value itself and the offsets already agree,
+                // so adding the header would walk past the field the instruction named.
+                var searchAddend = byRefStruct != null && !RawNestedOffsets
+                    ? memory.Addend + ValueTypeHeaderSize
+                    : memory.Addend;
 
                 var genericOwner = owner as GenericInstanceTypeAnalysisContext;
                 FieldDiag.Candidate();
@@ -898,12 +903,26 @@ public static class MetadataResolver
 
 
     /// <summary>
-    /// IL2CPP field offsets on a value type are measured from the start of its boxed form, so the
-    /// object header has to be added back when descending into one embedded in another type.
+    /// The object header an il2cpp field offset on a value type carries when the metadata measures it
+    /// from the boxed form. See <see cref="RawNestedOffsets"/>: this binary's does not.
     /// </summary>
     private const long ValueTypeHeaderSize = 0x10;
 
     private const int MaxNestingDepth = 8;
+
+    // This binary's metadata measures a value type's field offsets from the value itself, not from its
+    // boxed form: UIAnchor.min is 0x0 and max 0x8, Vector2.x is 0x0 and y 0x4, Quantum.Shape3D._type is
+    // 0x0. It is also what the exact match above relies on - [buffer+0] only finds min because min is
+    // recorded at 0. Descending with the header added therefore looks 0x10 past the field the
+    // instruction meant: [buffer+4] over a Vector2 hunts for offset 0x14, finds nothing, and the store
+    // is dropped, which is every Rewired.UI.UIAnchor getter. Where the struct is wide enough for 0x10 to
+    // hit something the answer is a wrong field instead - Shape3D+0x10 is LocalTransform.Position.Y, and
+    // the shifted walk calls it LocalTransform.Rotation.
+    //
+    // The unshifted walk is tried first and the shifted one only if it finds nothing, so no offset that
+    // resolves today stops resolving, and a binary whose metadata really is boxed-relative keeps
+    // working. CPP2IL_NESTED_RAW=0 goes back to the shifted walk alone.
+    private static readonly bool RawNestedOffsets = System.Environment.GetEnvironmentVariable("CPP2IL_NESTED_RAW") != "0";
 
     /// <summary>
     /// Resolves an offset that does not name a field directly but falls inside a value-type field,
@@ -912,6 +931,11 @@ public static class MetadataResolver
     /// silently produce a read of the wrong field, so only exact matches are accepted.
     /// </summary>
     private static (FieldAnalysisContext Outer, FieldAnalysisContext[] Path)? ResolveNestedField(TypeAnalysisContext owner, long addend, bool isStatic)
+        => RawNestedOffsets
+            ? Descend(owner, addend, isStatic, 0) ?? Descend(owner, addend, isStatic, ValueTypeHeaderSize)
+            : Descend(owner, addend, isStatic, ValueTypeHeaderSize);
+
+    private static (FieldAnalysisContext Outer, FieldAnalysisContext[] Path)? Descend(TypeAnalysisContext owner, long addend, bool isStatic, long headerShift)
     {
         var container = FindContainingValueTypeField(owner, addend, isStatic);
         if (container == null)
@@ -919,7 +943,7 @@ public static class MetadataResolver
 
         var outer = container.Value.Field;
         var path = new List<FieldAnalysisContext>();
-        var remaining = addend - container.Value.Offset + ValueTypeHeaderSize;
+        var remaining = addend - container.Value.Offset + headerShift;
         var current = outer.FieldType;
 
         for (var depth = 0; depth < MaxNestingDepth; depth++)
@@ -936,7 +960,7 @@ public static class MetadataResolver
                 return null;
 
             path.Add(inner.Value.Field);
-            remaining = remaining - inner.Value.Offset + ValueTypeHeaderSize;
+            remaining = remaining - inner.Value.Offset + headerShift;
             current = inner.Value.Field.FieldType;
         }
 

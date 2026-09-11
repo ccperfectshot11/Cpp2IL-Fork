@@ -15,8 +15,11 @@ public static class FloatLiteralRecovery
     {
         foreach (var instruction in method.ControlFlowGraph!.Blocks.SelectMany(block => block.Instructions))
         {
+            // ResultType, not Field.FieldType: where the offset landed inside a value-type field the
+            // type that decides whether the constant is a bit pattern is the innermost field's, and the
+            // outer one is the struct holding it, which never matches Single or Double.
             if (instruction.OpCode == OpCode.Move && instruction.Operands is [FieldReference field, _])
-                TryConvert(instruction, 1, field.Field.FieldType);
+                TryConvert(instruction, 1, field.ResultType);
             else if (instruction.IsCall && instruction.Operands is [MethodAnalysisContext target, ..])
                 ConvertArguments(instruction, target);
         }

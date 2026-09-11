@@ -459,6 +459,12 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, 
         // drop dead locals.
         Simplifier.Simplify(this);
 
+        // A constant written at the start of a struct field wrote the primitive that begins it, not the
+        // struct. Needs the folding above, which is what turns the zeroed register into the constant,
+        // and has to come before the float literals so the type that decides the bit pattern is the
+        // primitive's.
+        ScalarFieldStore.Run(this);
+
         // Fix float literals
         FloatLiteralRecovery.Run(this);
 
