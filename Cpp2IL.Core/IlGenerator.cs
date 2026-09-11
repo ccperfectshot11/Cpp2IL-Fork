@@ -105,6 +105,32 @@ public static class IlGenerator
     /// </summary>
     public static readonly bool InitialiseLocals = Environment.GetEnvironmentVariable("CPP2IL_INIT_LOCALS") == "1";
 
+    /// <summary>
+    /// Zeroeste un local de tip nativ inline, cu ldc.i4.0 urmat de conv.i, in loc sa cheme
+    /// System.IntPtr::get_Zero. On by default (CPP2IL_NINT_ZERO_INLINE=0 revine la apel).
+    /// Apelul se rezolva la rulare catre ciotul de mscorlib pe care il emite Cpp2IL, unde proprietatea
+    /// nu exista, iar recensamantul a numarat 18.255 de metode care cad cu
+    /// "MissingMethodException: Method not found: 'IntPtr System.IntPtr.get_Zero()'" - 89% din toata
+    /// categoria "membru inexistent". Perechea inline nu depinde de niciun membru din afara si da acelasi
+    /// zero. Decompilatorul o randeaza ca o conversie EXPLICITA, nu ca "IntPtr x = 0;": conv.i trece prin
+    /// TypeAnalysis.HandleConversion, care pune ExpectedType pe literal, iar Convert() taie pe ramura
+    /// CastTo fiindca IsSigned(ElementType.I) este true. Verificat si in iesire, nu doar in sursa
+    /// decompilatorului: tiparul exista deja in out_sa4 (343 din primele 1.067 de corpuri scanate) si
+    /// jurnalele de compilare nu contin niciun "Cannot implicitly convert type 'int' to 'System.IntPtr'".
+    /// </summary>
+    private static readonly bool InlineNativeIntZero = Environment.GetEnvironmentVariable("CPP2IL_NINT_ZERO_INLINE") != "0";
+
+    /// <summary>
+    /// Inchide blocul de avertismente diagnostice cu un terminator, ca sirul de IL sa nu cada peste
+    /// sfarsitul metodei. On by default (CPP2IL_DIAG_TERMINATOR=0 lasa blocul neterminat).
+    /// Avertismentele se adauga dupa ultimul ret al corpului, deci ultima instructiune a metodei ajunge
+    /// sa fie un call, iar un corp care nu se termina cu un terminator nu este IL valid si runtime-ul il
+    /// refuza intreg, inainte sa ruleze ceva. Masurat pe recensamant: din 12.003 corpuri refuzate, 8.999
+    /// au ultima instructiune ne-terminator si 8.497 poarta exact blocul asta - in timp ce din 29.742 de
+    /// corpuri pe care runtime-ul le-a acceptat (rulate sau care au aruncat), niciunul nu are coada asta.
+    /// </summary>
+    private static readonly bool TerminateDiagnosticBlock = Environment.GetEnvironmentVariable("CPP2IL_DIAG_TERMINATOR") != "0";
+
     public static void InjectHelpersType(ApplicationAnalysisContext appContext)
     {
         if (SkipHelpersType)
@@ -432,6 +458,25 @@ public static class IlGenerator
                 if (ilLocal.VariableType is CorLibTypeSignature { ElementType: AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I
                     or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U })
                 {
+                    // Acelasi zero, dar fara sa promita un membru din afara. Apelul de mai jos cere
+                    // System.IntPtr::get_Zero, iar la rulare "System.IntPtr" se leaga de ciotul de
+                    // mscorlib emis de Cpp2IL, care nu are proprietatea: 18.255 de metode cad cu
+                    // MissingMethodException inainte sa execute o instructiune proprie, adica 89% din
+                    // toata categoria "membru inexistent" a recensamantului si 25% din corpus.
+                    // ldc.i4.0 urmat de conv.i nu se leaga de nimic, si este exact ce ar fi emis un
+                    // compilator C# oricum, fiindca proprietatea este [Intrinsic] si se plieaza.
+                    // Decompilatorul il da ca o conversie explicita - `(IntPtr)0`, nu `IntPtr x = 0;` -
+                    // deci constrangerea care a impus apelul ramane respectata: conv.i intra in
+                    // TypeAnalysis.HandleConversion, care pune ExpectedType pe literal, iar Convert()
+                    // iese pe ramura CastTo pentru ca IsSigned(ElementType.I) este true.
+                    if (InlineNativeIntZero)
+                    {
+                        localInitialisation.Add(new CilInstruction(CilOpCodes.Ldc_I4_0));
+                        localInitialisation.Add(new CilInstruction(CilOpCodes.Conv_I));
+                        localInitialisation.Add(new CilInstruction(CilOpCodes.Stloc, ilLocal));
+                        continue;
+                    }
+
                     var zero = module.CorLibTypeFactory.CorLibScope
                         .CreateTypeReference("System", "IntPtr")
                         .CreateMemberReference("get_Zero", MethodSignature.CreateStatic(module.CorLibTypeFactory.IntPtr));
@@ -570,10 +615,34 @@ public static class IlGenerator
 
         // Add analysis warnings
         var instructions = body.Instructions;
+        var instructionsBeforeWarnings = instructions.Count;
         foreach (var warning in context.AnalysisWarnings)
         {
             instructions.Add(CilOpCodes.Ldstr, Diagnostic("Warning: " + warning));
             instructions.Add(CilOpCodes.Call, writeLine);
+        }
+
+        // Blocul de mai sus se adauga DUPA ultimul ret al corpului, deci ultima instructiune a metodei
+        // devine un call, iar sirul de IL cade peste sfarsitul metodei. Nu este o chestiune de stil:
+        // un corp care nu se inchide cu un terminator nu este IL valid, iar runtime-ul refuza intreaga
+        // metoda cu InvalidProgramException inainte sa execute ceva. Din 12.003 corpuri refuzate de
+        // recensamant, 8.999 au ultima instructiune ne-terminator; din 29.742 pe care runtime-ul le-a
+        // acceptat, niciunul. Separarea este completa, si asta este singura cauza care o explica.
+        //
+        // Terminatorul este `ldnull; throw` si nu `ret` fiindca nu depinde de semnatura: un ret ar cere
+        // o valoare de tipul de retur pe stiva, pe cand perechea asta este valida pentru orice metoda.
+        // Blocul ramane inaccesibil - nimic nu sare in el, vine dupa ret - deci nu se executa niciodata
+        // si nu minte despre comportament; doar inchide sirul ca sa poata fi verificat.
+        if (TerminateDiagnosticBlock && instructions.Count > instructionsBeforeWarnings)
+        {
+            instructions.Add(CilOpCodes.Ldnull);
+            instructions.Add(CilOpCodes.Throw);
+
+            // SetMaxStack a rulat inainte de blocul asta, si blocul cere adancime 1 (ldstr si ldnull
+            // impinge cate o valoare). Un corp care este doar `ret` a declarat 0, iar sub-declararea
+            // costa toata metoda - acelasi motiv pentru care exista SetMaxStack.
+            if (body.MaxStack < 1)
+                body.MaxStack = 1;
         }
 
         Analysis.DumpDiag.MaybeDump(context, definition);
