@@ -54,13 +54,17 @@ public static class IlGenerator
     private static readonly bool UnwrapValueStructs = Environment.GetEnvironmentVariable("CPP2IL_UNWRAP_STRUCTS") != "0";
 
     // The same repair one step out, for a struct that holds its whole value in several overlapping fields
-    // rather than in one. OFF by default (CPP2IL_UNION_STRUCTS=1 enables); StackCoercion reads the same
-    // switch for its half. See UnionValueField.
+    // rather than in one. See UnionValueField.
     //
-    // Measured at -50 STRICT: the ldfld it appends lands on a local nothing ever stores to, so the
-    // decompiled C# reads entityRef.Index out of an unassigned variable - a CS0165 family of 167 methods
-    // and 321 errors that does not exist without it. The 12 or so CS0019/CS0029 sites it does repair are
-    // real; the read needs a definite assignment before this can go back on.
+    // Measured at -50 STRICT on the first attempt, and the cost was not the ldfld this adds. Reading the
+    // IL of out_w34 says every local a union member is read off was zeroed at entry and is fine; the CS0165
+    // family came from the WRITE back, StackCoercion's wrapper local, which filled one member of a
+    // three-name struct and then read it whole. 329 EntityRef sites and 20 Color32 ones, 174 methods,
+    // against 62 methods the report counted as recoverable - and -50 = +12 repaired - 62 lost, which is the
+    // whole of the deficit. Both write sites now zero a multi-field struct first, which C# reads as the
+    // assignment it could not infer and which the member covering the struct overwrites byte for byte.
+    // Still OFF by default (CPP2IL_UNION_STRUCTS=1 enables) until the matrix is run again; StackCoercion
+    // reads the same switch for its half. See UnionValueField.
     private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
 
     // Types each side of a comparison from the other. Measured worse; kept so the experiment can be redone.
@@ -693,6 +697,19 @@ public static class IlGenerator
             }
 
         instructions.Add(CilOpCodes.Stloc, scratch);
+
+        // Filling one member of a union leaves the others unwritten under C#'s per-name definite assignment,
+        // and the Ldloc at the end reads the local whole - see StackCoercion, where the same shape on a
+        // freshly made local is the whole CS0165 family. Here the local is one InitialiseLocals already
+        // zeroed, so this only matters when that pass is off; two instructions on the handful of union
+        // rewrap sites is worth not depending on another switch for correctness. The member written covers
+        // the struct exactly, so the zero is overwritten byte for byte and the value is unchanged.
+        if (MultiFieldStruct(destinationType))
+        {
+            instructions.Add(CilOpCodes.Ldloca, ilLocal);
+            instructions.Add(CilOpCodes.Initobj, destinationType.ToTypeSignature().ToTypeDefOrRef());
+        }
+
         instructions.Add(CilOpCodes.Ldloca, ilLocal);
         instructions.Add(CilOpCodes.Ldloc, scratch);
         instructions.Add(CilOpCodes.Stfld, field.ToFieldDescriptor());
@@ -921,6 +938,20 @@ public static class IlGenerator
     // that already unwrapped keeps unwrapping through exactly the field it always did.
     private static FieldAnalysisContext? ArithmeticValueField(TypeAnalysisContext? type, int registerBits)
         => SingleValueField(type) ?? UnionValueField(type, registerBits);
+
+    // Whether writing one member of this struct leaves the rest unassigned as far as C# is concerned, which
+    // counts names rather than bytes: a union's members overlap, and that overlap is precisely what the
+    // compiler does not model. A wrapper has one field and is whole the moment that field is written.
+    private static bool MultiFieldStruct(TypeAnalysisContext type)
+    {
+        var fields = 0;
+
+        foreach (var field in type.Fields)
+            if (!field.IsStatic && ++fields > 1)
+                return true;
+
+        return false;
+    }
 
     // The width in bytes of a primitive, or null for anything whose layout its element type does not settle -
     // native int included, since that is the one width that is not written down.

@@ -45,8 +45,9 @@ public static class StackCoercion
     private static readonly bool UntypedArithmetic = Environment.GetEnvironmentVariable("CPP2IL_OBJ_ARITH") != "0";
 
     // Reads a union struct through whichever member is the register at the width the opcode wants. Shares its
-    // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=1 enables both; off by
-    // default while the field read can land on an unassigned local - see IlGenerator).
+    // switch with the emitter's half of the same repair (CPP2IL_UNION_STRUCTS=1 enables both; still off by
+    // default until the matrix is run again - see IlGenerator for what the first run measured and why the
+    // cost was the write back rather than the read).
     private static readonly bool UnwrapUnionStructs = Environment.GetEnvironmentVariable("CPP2IL_UNION_STRUCTS") == "1";
 
     // A round only reaches the sites the previous one boxed a result into, so the chains are short and a
@@ -830,6 +831,23 @@ public static class StackCoercion
             body.LocalVariables.Add(wrapper);
 
             bridge.Add(new CilInstruction(CilOpCodes.Stloc, parked));
+
+            // A union is several names for the same bytes, but C# tracks definite assignment per name: the
+            // stfld below fills Raw, which leaves Index and Version unwritten as far as the compiler can
+            // see, and the ldloc that reads the wrapper whole is then CS0165 - 329 sites over EntityRef and
+            // 20 over Color32, 174 methods in the two checked assemblies, a family that did not exist while
+            // this branch only ever ran for single-field wrappers. The member written is the one covering
+            // the struct exactly - ValueFieldOf was asked for width 0, which is what returns it - so the
+            // zero put down here is overwritten byte for byte and no value survives it. It states the
+            // assignment somewhere C# can check rather than adding one. A one-field wrapper is already
+            // whole once that field is written, and leaving it alone keeps the 3,200 FP and
+            // RuntimeTypeHandle sites two instructions shorter.
+            if (LeavesFieldsUnassigned(expected))
+            {
+                bridge.Add(new CilInstruction(CilOpCodes.Ldloca, wrapper));
+                bridge.Add(new CilInstruction(CilOpCodes.Initobj, expected.ToTypeDefOrRef()));
+            }
+
             bridge.Add(new CilInstruction(CilOpCodes.Ldloca, wrapper));
             bridge.Add(new CilInstruction(CilOpCodes.Ldloc, parked));
             bridge.Add(new CilInstruction(CilOpCodes.Stfld, Import(body, written)));
@@ -974,6 +992,30 @@ public static class StackCoercion
             return only?.Signature?.FieldType is CorLibTypeSignature ? only : null;
         });
     }
+
+    private static readonly ConcurrentDictionary<string, bool> MultiFieldStructs = new();
+
+    /// <summary>
+    /// Whether filling one member of this struct leaves the rest of it unassigned as far as C# is concerned.
+    /// True of every union and of nothing else anything here writes into: a wrapper has one field, and one
+    /// field written is the whole variable written. Counting names rather than bytes is the point - the
+    /// bytes do overlap, which is exactly what the compiler cannot see and what the caller has to work
+    /// around. Unresolvable is false, so a type nothing can be read off is left exactly as it was.
+    /// </summary>
+    private static bool LeavesFieldsUnassigned(TypeSignature type)
+        => MultiFieldStructs.GetOrAdd(type.FullName, _ =>
+        {
+            if (Resolve(type) is not { } definition)
+                return false;
+
+            var fields = 0;
+
+            foreach (var field in definition.Fields)
+                if (!field.IsStatic && ++fields > 1)
+                    return true;
+
+            return false;
+        });
 
     private static readonly ConcurrentDictionary<string, List<FieldDefinition>?> UnionFields = new();
 
