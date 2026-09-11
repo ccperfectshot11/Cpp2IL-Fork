@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -44,6 +44,21 @@ internal static class Program
             .WithNullableContextOptions(NullableContextOptions.Disable);
     private static readonly CSharpParseOptions ParseOpts = new CSharpParseOptions(LanguageVersion.Latest);
 
+    private static bool MatchesFilter(string fileName, string filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+            return true;
+
+        foreach (var piece in filter.Split(','))
+        {
+            var trimmed = piece.Trim();
+            if (trimmed.Length > 0 && fileName.IndexOf(trimmed, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+
+        return false;
+    }
+
     private static int Main(string[] args)
     {
         if (args.Length < 1)
@@ -61,7 +76,10 @@ internal static class Program
             try { _refCache[d] = MetadataReference.CreateFromFile(d); } catch { }
 
         var targets = _allDlls
-            .Where(p => filter == null || Path.GetFileName(p).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+            // Mai multe fragmente, separate prin virgula: numai 35 din cele 150 de assembly-uri sunt
+            // scrise de autorii jocului, iar restul sunt biblioteci publice pe care un proiect Unity le
+            // ia originale. Referintele raman toate, se filtreaza doar ce se masoara.
+            .Where(p => MatchesFilter(Path.GetFileName(p), filter))
             // biggest first so the long poles start early and the small ones fill the gaps
             .OrderByDescending(p => new FileInfo(p).Length)
             .ToArray();
