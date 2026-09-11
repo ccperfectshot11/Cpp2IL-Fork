@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -156,11 +156,34 @@ internal static class Selector
         + ", " + (AllowPureBclLeaf ? "bcl-leaf=ON" : "bcl-leaf=off")
         + ", " + (SkipDeadWarnings ? "dead-warnings=ON" : "dead-warnings=off");
 
+    /// <summary>
+    /// Adevarat daca numele fisierului contine oricare dintre fragmentele din <paramref name="filter"/>,
+    /// sau daca filtrul lipseste. Fragmentele se separa prin virgula si se compara fara diacritice de caz.
+    /// </summary>
+    private static bool MatchesFilter(string fileName, string filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+            return true;
+
+        foreach (var piece in filter.Split(','))
+        {
+            var trimmed = piece.Trim();
+            if (trimmed.Length > 0 && fileName.IndexOf(trimmed, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+
+        return false;
+    }
+
     public static SelectionResult Select(string dllDir, string filter, bool allowStatics)
     {
         var result = new SelectionResult();
         var dlls = Directory.GetFiles(dllDir, "*.dll", SearchOption.TopDirectoryOnly)
-            .Where(p => filter == null || Path.GetFileName(p).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+            // Filtrul accepta mai multe fragmente separate prin virgula. Corpusul are 150 de DLL-uri,
+            // dar numai vreo doisprezece sunt scrise de autorii jocului; restul sunt biblioteci publice
+            // - Cinemachine, Newtonsoft, Firebase - pe care un proiect Unity le ia originale, deci a le
+            // masura nu spune nimic si a le incarca pe toate a dat crash pe o masina de 16 GB.
+            .Where(p => MatchesFilter(Path.GetFileName(p), filter))
             .OrderBy(p => p)
             .ToArray();
 
