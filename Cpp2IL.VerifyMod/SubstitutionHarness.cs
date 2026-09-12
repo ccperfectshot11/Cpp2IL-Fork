@@ -48,6 +48,11 @@ namespace Cpp2IL.VerifyMod;
 ///   CPP2IL_SUBST_SAMPLES=N      cate apeluri se masoara per metoda inainte de descarligare (implicit 64)
 ///   CPP2IL_SUBST_DWELL=S        cate secunde sta armata o transa daca jocul nu o cheama (implicit 30)
 ///   CPP2IL_SUBST_PROMOTE=N      cate potriviri consecutive inainte ca modul substitute sa scrie inapoi (implicit 16)
+///   CPP2IL_SUBST_MAX=N          cate metode se incearca in aceasta sesiune (implicit 0 = toate)
+///
+/// Rezultatele se aduna in subst-results.tsv si nu se rescriu: o sesiune noua sare peste cheile deja
+/// masurate, deci masuratoarea se poate face in reprize de cate douazeci de minute in loc de una singura
+/// de treisprezece ore.
 /// </summary>
 internal static class SubstitutionHarness
 {
@@ -185,6 +190,11 @@ internal static class SubstitutionHarness
         if (_planOnly)
         {
             _log("CPP2IL_SUBST_PLAN=1: lista scrisa, nu se carliga nimic.");
+
+            // Rezumatul se scrie si aici, desi nu s-a masurat nimic: scriptul care porneste jocul asteapta
+            // FISIERUL ca semn ca rularea s-a terminat. Fara el, o rulare de plan - care dureaza secunde -
+            // ar parea blocata pana la expirarea celor treizeci de minute.
+            Summarise();
             _finished = true;
             return;
         }
@@ -202,7 +212,43 @@ internal static class SubstitutionHarness
             _queue.Add(entry);
         }
 
-        _log("Lista de lucru: " + _queue.Count + " metode de incercat (" + skip.Count + " sarite din rulari care au murit).");
+        // Plafon pe sesiune. Fara el o lista de o mie sase sute de metode cu o metoda pe rand si treizeci
+        // de secunde de asteptare fiecare ar cere treisprezece ore de joc pornit - iar rezultatul s-ar
+        // vedea abia la sfarsit. Cu plafon, fiecare rulare aduce o bucata masurata pe disc, si urmatoarea
+        // continua de unde a ramas, fiindca lista sarita se citeste din rezultatele deja scrise.
+        var max = Number("CPP2IL_SUBST_MAX", 0);
+        var done = AlreadyMeasured();
+        if (done.Count > 0)
+            _queue.RemoveAll(entry => done.Contains(entry.Key));
+
+        if (max > 0 && _queue.Count > max)
+            _queue.RemoveRange(max, _queue.Count - max);
+
+        _log("Lista de lucru: " + _queue.Count + " metode de incercat (" + skip.Count + " sarite dupa morti de proces, "
+            + done.Count + " deja masurate in rulari anterioare).");
+    }
+
+    /// <summary>
+    /// Cheile masurate deja, citite din fisierul de rezultate. Fara asta fiecare repornire ar lua-o de la
+    /// capul listei si ar remasura la nesfarsit primele metode, exact ce l-ar fi omorat si pe recensamant
+    /// daca nu si-ar fi tinut socoteala pe disc.
+    /// </summary>
+    private static HashSet<string> AlreadyMeasured()
+    {
+        var done = new HashSet<string>(StringComparer.Ordinal);
+        var path = Path.Combine(_directory, ResultsFile);
+
+        if (!File.Exists(path))
+            return done;
+
+        foreach (var line in File.ReadAllLines(path))
+        {
+            var at = line.IndexOf(Sep);
+            if (at > 0)
+                done.Add(line.Substring(0, at));
+        }
+
+        return done;
     }
 
     /// <summary>

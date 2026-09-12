@@ -14,6 +14,16 @@
 #   .\run-phase3.ps1 -Mode plan         scrie doar lista de lucru si se opreste
 #   .\run-phase3.ps1 -Mode shadow       masoara: jocul ramane neatins, se compara doar raspunsurile
 #   .\run-phase3.ps1 -Mode substitute   pe deasupra, INLOCUIESTE raspunsul jocului dupa N potriviri
+#
+# Despre -Batch: implicit 1, adica o metoda pe rand, fiindca asa jurnalul .inflight numeste exact
+# vinovatul cand procesul moare. In modul shadow jocul nu este atins deloc - raspunsul lui ramane al lui -
+# deci acolo o transa mai mare este alegerea rezonabila pentru prima masuratoare (-Batch 25), cu pretul ca
+# o moarte de proces cere o repornire cu -Batch 1 ca sa iasa la iveala care metoda a fost. In modul
+# substitute lasa-l pe 1.
+#
+# Despre -Max: rezultatele se aduna in subst-results.tsv si o sesiune noua sare peste ce s-a masurat deja,
+# deci lista se poate parcurge in reprize scurte. Cu -Batch 1 si -Dwell 30 o lista de 1.640 de metode ar
+# cere treisprezece ore intr-o singura sesiune.
 param(
     [ValidateSet("plan", "shadow", "substitute")]
     [string]$Mode = "plan",
@@ -25,6 +35,9 @@ param(
     [int]$Samples = 64,
     [int]$Dwell = 30,
     [int]$Promote = 16,
+    # Cate metode se incearca intr-o sesiune. Rezultatele se aduna pe disc si sesiunea urmatoare sare peste
+    # ce s-a masurat deja, deci masuratoarea se face in reprize scurte in loc de una singura interminabila.
+    [int]$Max = 0,
     [int]$TimeoutMinutes = 30,
     # Jurnalul este facut ca sa supravietuiasca mortii procesului: la repornire, metoda din .inflight
     # ajunge in .skip si rularea merge mai departe de unde a ramas. De aceea scriptul reporneste singur.
@@ -70,6 +83,7 @@ $env:CPP2IL_SUBST_BATCH = "$Batch"
 $env:CPP2IL_SUBST_SAMPLES = "$Samples"
 $env:CPP2IL_SUBST_DWELL = "$Dwell"
 $env:CPP2IL_SUBST_PROMOTE = "$Promote"
+$env:CPP2IL_SUBST_MAX = "$Max"
 $env:CPP2IL_SUBST_MODE = if ($Mode -eq "substitute") { "substitute" } else { "shadow" }
 $env:CPP2IL_SUBST_PLAN = if ($Mode -eq "plan") { "1" } else { "0" }
 # Modul isi inchide jocul singur cand termina, la fel ca faza 2.
