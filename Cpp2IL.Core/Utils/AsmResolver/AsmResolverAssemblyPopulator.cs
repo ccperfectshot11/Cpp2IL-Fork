@@ -86,15 +86,54 @@ public static class AsmResolverAssemblyPopulator
     {
         foreach (var param in cppTypeDefinition.GenericParameters)
         {
-            var p = new GenericParameter(param.Name, (GenericParameterAttributes)param.Attributes);
+            var attributes = (GenericParameterAttributes)param.Attributes;
+            var p = new GenericParameter(param.Name, attributes);
 
             ilTypeDefinition.GenericParameters.Add(p);
 
             param.ConstraintTypes
+                .Where(c => !IsDegradedUnmanagedConstraint(attributes, c))
                 .Select(c => new GenericParameterConstraint(c.ToTypeSignature().ToTypeDefOrRef()))
                 .ToList()
                 .ForEach(p.Constraints.Add);
         }
+    }
+
+    /// <summary>
+    /// <c>where T : unmanaged</c> se scrie in IL ca flagul <c>valuetype</c> plus un rand de constrangere
+    /// pe <c>System.ValueType</c> care poarta <c>modreq(System.Runtime.InteropServices.UnmanagedType)</c>.
+    /// Modelul de tipuri al lui il2cpp nu are modificatori personalizati, asa ca pastreaza randul de
+    /// constrangere si pierde modreq-ul. Ce ajunge in metadatele noastre e flagul <c>valuetype</c> plus o
+    /// constrangere GOALA pe <c>System.ValueType</c> - o forma pe care C# nu o poate exprima si pe care
+    /// Roslyn o respinge cu CS0570 "'T' is not supported by the language", la FIECARE folosire a tipului.
+    /// Masurat pe quantum.core.dll: 65 de tipuri au tiparul asta si niciunul nu mai are modreq-ul.
+    ///
+    /// Nu putem pune modreq-ul inapoi cinstit. Singurul indiciu ca parametrul era <c>unmanaged</c> ar fi
+    /// <c>[IsUnmanagedAttribute]</c> pe parametrul generic, dar noi nu copiem NICIUN atribut personalizat
+    /// pe parametrii generici - vezi mai sus, scriem doar numele, flagurile si constrangerile. Faptul ca
+    /// tipul <c>IsUnmanagedAttribute</c> exista in assembly nu inseamna ca aplicarea lui pe parametru a
+    /// supravietuit; sunt doua lucruri diferite. Iar daca am pune modreq-ul oriunde vedem tiparul, am
+    /// RESTRANGE <c>struct</c> la <c>unmanaged</c> in fiecare loc unde am ghicit gresit, si atunci
+    /// instantieri care azi compileaza ar cadea cu CS8377.
+    ///
+    /// Mergem deci invers si scoatem constrangerea redundanta: iese <c>where T : struct</c>, adica o
+    /// LARGIRE. O largire nu poate respinge nimic din ce era acceptat inainte, deci nu poate naste erori
+    /// noi in codul recuperat, iar constrangerile generice nu se verifica la rulare pentru cod deja
+    /// compilat, deci comportamentul assembly-ului nu se schimba. Pierdem doar precizia declaratiei.
+    ///
+    /// Tiparul NU poate prinde un <c>where T : struct</c> obisnuit: pentru <c>struct</c> compilatorul C#
+    /// nu emite niciun rand in GenericParamConstraint, doar flagul. Un rand pe <c>System.ValueType</c>
+    /// impreuna cu flagul <c>valuetype</c> apare numai acolo unde a existat un modreq care s-a pierdut pe
+    /// drum. Cand flagul nu e pus, constrangerea chiar inseamna ceva (<c>where T : ValueType</c> e IL
+    /// legal, chiar daca nu e C# scriibil) si o lasam neatinsa. Nu atingem nici <c>System.Enum</c> sau
+    /// orice alta constrangere: acolo randul nu e redundant fata de niciun flag.
+    /// </summary>
+    private static bool IsDegradedUnmanagedConstraint(GenericParameterAttributes attributes, TypeAnalysisContext constraint)
+    {
+        if ((attributes & GenericParameterAttributes.NotNullableValueTypeConstraint) == 0)
+            return false;
+
+        return constraint is not ReferencedTypeAnalysisContext and { Namespace: "System", Name: "ValueType", DeclaringType: null };
     }
 
     private static TypeSignature GetTypeSigFromAttributeArg(BaseCustomAttributeParameter parameter) =>
@@ -440,12 +479,16 @@ public static class AsmResolverAssemblyPopulator
             methodCtx.GenericParameters
                 .ForEach(p =>
                 {
-                    var gp = new GenericParameter(p.Name, (GenericParameterAttributes)p.Attributes);
+                    var attributes = (GenericParameterAttributes)p.Attributes;
+                    var gp = new GenericParameter(p.Name, attributes);
 
                     if (!managedMethod.GenericParameters.Contains(gp))
                         managedMethod.GenericParameters.Add(gp);
 
+                    // Acelasi `unmanaged` degradat ca la parametrii generici de tip; vezi
+                    // IsDegradedUnmanagedConstraint pentru ce prinde si ce nu prinde tiparul.
                     p.ConstraintTypes
+                        .Where(c => !IsDegradedUnmanagedConstraint(attributes, c))
                         .Select(c => new GenericParameterConstraint(c.ToTypeSignature().ToTypeDefOrRef()))
                         .ToList()
                         .ForEach(gp.Constraints.Add);
