@@ -45,6 +45,8 @@ namespace Cpp2IL.VerifyMod;
 ///   CPP2IL_ACTIVE_SKIP=a,b     fragmente de nume de assembly de SARIT (de pilda Rewired)
 ///   CPP2IL_ACTIVE_SAFETY=0     opreste lista de siguranta - de folosit numai cu jocul deconectat
 ///   CPP2IL_ACTIVE_RECEIVERS=0  numai metode statice, niciun receptor fabricat
+///   CPP2IL_ACTIVE_PREJIT=0     nu mai compileaza corpul recuperat inainte de apel (implicit compileaza)
+///   CPP2IL_ACTIVE_ENUM_DOMAIN=0  enum-urile se fuzzeaza pe tot intervalul intregului, nu pe valorile declarate
 ///   CPP2IL_ACTIVE_SEED=N       samanta generatorului (implicit 1)
 ///
 /// Rezultatele se aduna in active-results.tsv si nu se rescriu niciodata: o sesiune noua sare peste cheile
@@ -79,6 +81,17 @@ internal static class ActiveSweep
     private const string VerdictNoReturn = "NO_RETURN";
     private const string VerdictNotAttempted = "NOT_ATTEMPTED";
     private const string VerdictCrashed = "CRASHED";
+    private const string VerdictIlInvalid = "IL_INVALID";
+
+    // Etapa la care se afla maturarea cand scrie jurnalul. Exista pentru un singur motiv, dar unul care
+    // hotaraste orice reparatie de aici incolo: "Fatal error. Internal CLR error. (0x80131506)" apare cu
+    // stiva la ActiveSweep.Call, iar prin Call trec AMANDOUA implementarile. Fara etapa in jurnal nu se
+    // poate spune daca procesul a fost omorat de corpul recuperat sau de metoda NATIVA a jocului chemata
+    // cu argumente fabricate - iar cele doua cer reparatii care nu au nimic in comun.
+    private const string StageResolve = "resolve";
+    private const string StagePrepare = "prepare-ours";
+    private const string StageCallGame = "call-game";
+    private const string StageCallOurs = "call-ours";
 
     private static Action<string> _log = _ => { };
     private static string _directory = ".";
@@ -90,6 +103,8 @@ internal static class ActiveSweep
     private static bool _dumpOnly;
     private static bool _safety;
     private static bool _receivers;
+    private static bool _preJit;
+    private static bool _enumDomain;
     private static string _dllDirectory = "";
     private static string _filter = "";
     private static string _skipAssemblies = "";
@@ -136,6 +151,8 @@ internal static class ActiveSweep
         // trebuie sa o ceri anume.
         _safety = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_SAFETY") != "0";
         _receivers = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_RECEIVERS") != "0";
+        _preJit = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREJIT") != "0";
+        _enumDomain = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_ENUM_DOMAIN") != "0";
 
         _max = Number("CPP2IL_ACTIVE_MAX", 2000, allowZero: true);
         _perFrame = Number("CPP2IL_ACTIVE_PER_FRAME", 25, allowZero: false);
@@ -450,10 +467,16 @@ internal static class ActiveSweep
         {
             File.AppendAllText(skipPath, crashedKey + Environment.NewLine);
 
-            RecordLine(crashedKey, parts.Length > 1 ? parts[1] : "", VerdictCrashed, "process-death",
-                parts.Length > 2 ? parts[2] : "", "", "", "a luat procesul cu ea");
+            // Etapa ajunge in coloana de TARIE, acolo unde celelalte verdicte isi pun felul dovezii. Asa
+            // se poate numara direct din fisier cate caderi au fost pe partea jocului si cate pe a noastra,
+            // fara sa fie nevoie de inca o rulare ca sa se afle.
+            var stage = parts.Length > 3 ? parts[3] : "necunoscuta";
 
-            _log("Rularea trecuta a murit in " + crashedKey + " - inregistrata ca CRASHED si sarita de acum.");
+            RecordLine(crashedKey, parts.Length > 1 ? parts[1] : "", VerdictCrashed, stage,
+                parts.Length > 2 ? parts[2] : "", "", "", "a luat procesul cu ea la etapa " + stage);
+
+            _log("Rularea trecuta a murit in " + crashedKey + " la etapa " + stage
+                + " - inregistrata ca CRASHED si sarita de acum.");
         }
 
         try
@@ -506,7 +529,7 @@ internal static class ActiveSweep
 
         // Scris INAINTE de apel, nu dupa. O metoda care ia procesul cu ea nu se poate prinde, si singurul
         // fel in care rularea urmatoare trece de ea este sa-i stie numele de dinainte.
-        WriteJournal(key, assembly, row[ColQuality]);
+        WriteJournal(key, assembly, row[ColQuality], StageResolve);
 
         try
         {
@@ -596,7 +619,30 @@ internal static class ActiveSweep
             return;
         }
 
+        // Compilarea corpului recuperat, INAINTE de orice apel si inaintea metodei jocului.
+        //
+        // Ce incearca sa repare: un corp recuperat cu IL invalid nu da intotdeauna InvalidProgramException.
+        // Uneori JIT-ul cade in timp ce construieste ciotul de invocare prin reflectie, si atunci nu mai
+        // exista cadru pe care sa se ridice o exceptie - procesul moare cu 0x80131506 si niciun try nu il
+        // prinde. PrepareMethod cere aceeasi compilare, dar in afara ciotului, unde esecul are unde sa se
+        // ridice ca exceptie obisnuita.
+        //
+        // NU este sigur ca muta toate caderile, si nu se pretinde asta nicaieri: daca PrepareMethod cade la
+        // fel de fatal, jurnalul o va arata drept cadere la etapa "prepare-ours" si atunci se stie, dintr-o
+        // singura rulare, ca drumul asta nu tine. Se face inaintea metodei jocului dinadins - un corp pe
+        // care nu il putem compila nu are de ce sa mai coste un apel in codul nativ al jocului.
+        WriteJournal(key, assembly, quality, StagePrepare);
+
+        if (!PrepareOurs(ours, out var prepareError))
+        {
+            Record(key, assembly, VerdictIlInvalid, "prepare-refused", quality, "", "", prepareError);
+            return;
+        }
+
+        WriteJournal(key, assembly, quality, StageCallGame);
         var gameThrew = Call(game, gameReceiver, gameArgs, out var gameValue, out var gameError);
+
+        WriteJournal(key, assembly, quality, StageCallOurs);
         var ourThrew = Call(ours, ourReceiver, ourArgs, out var ourValue, out var ourError);
 
         if (gameThrew && ourThrew)
@@ -618,6 +664,34 @@ internal static class ActiveSweep
         }
 
         CompareReturn(key, assembly, quality, returnPlan, game, ours, gameValue, ourValue);
+    }
+
+    /// <summary>
+    /// Cere JIT-ului sa compileze corpul recuperat acum, ca sa avem unde prinde un IL invalid.
+    ///
+    /// Metoda jocului NU se pregateste la fel, si nu din scapare: invelisul Il2CppInterop este IL generat
+    /// de unealta si valid prin constructie, deci nu are ce sa refuze JIT-ul acolo. Daca o cadere se
+    /// intampla totusi pe partea jocului, ea vine din codul NATIV de dincolo de invelis, unde nici
+    /// PrepareMethod si nicio alta pregatire nu ajunge.
+    /// </summary>
+    private static bool PrepareOurs(MethodBase method, out string error)
+    {
+        error = "";
+
+        if (!_preJit)
+            return true;
+
+        try
+        {
+            RuntimeHelpers.PrepareMethod(method.MethodHandle);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            var inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+            error = inner.GetType().Name + ": " + inner.Message;
+            return false;
+        }
     }
 
     /// <summary>
@@ -732,12 +806,14 @@ internal static class ActiveSweep
         if (gameShape == null || ourShape == null || gameShape.LeafCount != ourShape.LeafCount)
             return false;
 
-        var kinds = new List<LeafKind>();
-        CollectKinds(ourShape, kinds);
+        // Frunzele se strang ca FORME, nu doar ca feluri de primitiva, fiindca pentru un enum ne trebuie
+        // si tipul lui ca sa stim ce valori are voie sa ia.
+        var leafShapes = new List<ValueShape>();
+        CollectLeaves(ourShape, leafShapes);
 
-        var leaves = new object[kinds.Count];
-        for (var i = 0; i < kinds.Count; i++)
-            leaves[i] = FuzzInputs.RandomValue(kinds[i], ref random);
+        var leaves = new object[leafShapes.Count];
+        for (var i = 0; i < leafShapes.Count; i++)
+            leaves[i] = LeafValue(leafShapes[i], ref random);
 
         try
         {
@@ -755,16 +831,73 @@ internal static class ActiveSweep
         }
     }
 
-    private static void CollectKinds(ValueShape shape, List<LeafKind> kinds)
+    private static void CollectLeaves(ValueShape shape, List<ValueShape> leaves)
     {
         if (shape.IsLeaf)
         {
-            kinds.Add(shape.Kind);
+            leaves.Add(shape);
             return;
         }
 
         foreach (var child in shape.Children)
-            CollectKinds(child, kinds);
+            CollectLeaves(child, leaves);
+    }
+
+    /// <summary>
+    /// Valoarea unei frunze. Pentru un enum se trage dintre valorile DECLARATE, nu de pe tot intervalul
+    /// intregului de dedesubt.
+    ///
+    /// Nu este o rafinare de stil, este o reparatie cu nume si prenume. Dintre cele cinci metode care au
+    /// omorat procesul in prima sesiune, doua au exact aceeasi forma - CompressionUtils::GetHttpName(
+    /// CompressionAlgorithm) si QualityTermInterpreter::QualityLevelToText(QualityLevel): primesc un enum
+    /// si intorc un string. Un joc scrie asa ceva ca o cautare intr-un tabel indexat cu enumul, iar IL2CPP
+    /// compilat pentru livrare nu mai emite verificari de interval. Un enum fuzzat cu int.MinValue citeste
+    /// atunci mult in afara tabelului si intoarce un pointer de gunoi, pe care invelisul Il2CppInterop il
+    /// desface ca pe un obiect - de acolo pana la moartea procesului nu mai e nimic de facut.
+    ///
+    /// Ce se pierde, spus pe fata: ramura "valoare necunoscuta" a metodei nu mai este exersata. Este un
+    /// schimb constient - acea ramura costa, masurat, doua morti de proces din cinci, iar fiecare moarte
+    /// costa o repornire de treizeci de secunde in care nu se masoara nimic. CPP2IL_ACTIVE_ENUM_DOMAIN=0
+    /// da inapoi fuzzarea pe tot intervalul.
+    ///
+    /// Valorile declarate se iau de pe tipul RECUPERAT si se dau ca intreg brut amandurora. Este corect
+    /// fiindca Materialise face Enum.ToObject cu tipul fiecarei parti, iar toate cele 1.761 de enum-uri
+    /// recuperate au acelasi tip de baza si aceleasi valori ca ale jocului - verificat pe metadate, nu
+    /// presupus.
+    /// </summary>
+    private static object LeafValue(ValueShape leaf, ref DeterministicRandom random)
+    {
+        if (!_enumDomain || leaf.EnumUnderlying == null)
+            return FuzzInputs.RandomValue(leaf.Kind, ref random);
+
+        Array declared;
+        try
+        {
+            declared = Enum.GetValues(leaf.Type);
+        }
+        catch (Exception)
+        {
+            return FuzzInputs.RandomValue(leaf.Kind, ref random);
+        }
+
+        // Un enum fara niciun membru declarat nu are domeniu din care sa alegem; acolo intervalul intreg
+        // este singurul lucru pe care il putem da.
+        if (declared.Length == 0)
+            return FuzzInputs.RandomValue(leaf.Kind, ref random);
+
+        var picked = declared.GetValue((int)(random.Next() % (ulong)declared.Length));
+
+        try
+        {
+            // Inapoi la intregul de dedesubt: Materialise asteapta frunza ca numar si o imbraca el in
+            // enumul fiecarei parti. Un enum recuperat in cutie dat asa mai departe ar fi imbracat a doua
+            // oara, in tipul gresit.
+            return Convert.ChangeType(picked, leaf.EnumUnderlying, CultureInfo.InvariantCulture);
+        }
+        catch (Exception)
+        {
+            return FuzzInputs.RandomValue(leaf.Kind, ref random);
+        }
     }
 
     private static bool Zero(Type gameType, Type ourType, out object gameValue, out object ourValue)
@@ -1000,14 +1133,14 @@ internal static class ActiveSweep
     /// dar nu si ce a apucat sistemul de operare sa preia. Numai o cadere a masinii ar pierde randul, si
     /// atunci nu jurnalul este problema.
     /// </summary>
-    private static void WriteJournal(string key, string assembly, string quality)
+    private static void WriteJournal(string key, string assembly, string quality, string stage)
     {
         try
         {
             if (_journal == null)
                 _journal = new FileStream(Path.Combine(_directory, InflightFile), FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
 
-            var bytes = Encoding.UTF8.GetBytes(key + Sep + assembly + Sep + quality);
+            var bytes = Encoding.UTF8.GetBytes(key + Sep + assembly + Sep + quality + Sep + stage);
             _journal.SetLength(0);
             _journal.Position = 0;
             _journal.Write(bytes, 0, bytes.Length);
@@ -1048,6 +1181,7 @@ internal static class ActiveSweep
         var byAssembly = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         var byType = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         var agreeByQuality = new Dictionary<string, int>(StringComparer.Ordinal);
+        var byCrashStage = new Dictionary<string, int>(StringComparer.Ordinal);
         var total = 0;
 
         if (File.Exists(path))
@@ -1082,6 +1216,9 @@ internal static class ActiveSweep
 
                 if (verdict == VerdictAgrees)
                     Bump(agreeByQuality, quality);
+
+                if (verdict == VerdictCrashed)
+                    Bump(byCrashStage, fields.Length > 3 ? fields[3] : "necunoscuta");
             }
         }
 
@@ -1101,6 +1238,19 @@ internal static class ActiveSweep
         builder.AppendLine("   (un acord obtinut cu receptor fabricat pe zero NU se aduna cu unul pe valori generate)");
         foreach (var pair in Sorted(agreeByQuality))
             builder.AppendLine("  " + pair.Key.PadRight(48) + pair.Value);
+
+        if (byCrashStage.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("== CADERI, pe etapa ==");
+            builder.AppendLine("   call-game   = a omorat-o metoda NATIVA a jocului; nici PrepareMethod nici");
+            builder.AppendLine("                 filtrarea IL-ului recuperat nu ajuta acolo");
+            builder.AppendLine("   call-ours   = a omorat-o corpul recuperat la apel, desi compilarea a trecut");
+            builder.AppendLine("   prepare-ours= a omorat-o chiar compilarea corpului recuperat, deci");
+            builder.AppendLine("                 PrepareMethod nu muta caderea si drumul asta nu tine");
+            foreach (var pair in Sorted(byCrashStage))
+                builder.AppendLine("  " + pair.Key.PadRight(16) + pair.Value);
+        }
 
         builder.AppendLine();
         builder.AppendLine("== pe calitatea argumentelor, toate verdictele ==");
