@@ -1147,23 +1147,45 @@ namespace ICSharpCode.Decompiler.Ast {
 		#endregion
 
 		#region ConvertModifiers
+		// Vizibilitatea scrisa direct din metadate, fara nicio corectie. E scoasa separat ca sa se poata
+		// intreba si despre tipul de baza sau despre o interfata fara sa reintram in logica de largire de
+		// mai jos: asa nu exista recursie, oricat de ciudat ar fi lantul de mostenire din metadate.
+		Modifiers RawTypeVisibility(TypeDef typeDef)
+		{
+			if (typeDef.IsNestedPrivate)
+				return context.Settings.MemberAddPrivateModifier ? Modifiers.Private : Modifiers.None;
+			if (typeDef.IsNotPublic)
+				return context.Settings.TypeAddInternalModifier ? Modifiers.Internal : Modifiers.None;
+			if (typeDef.IsNestedAssembly || typeDef.IsNestedFamilyAndAssembly)
+				return Modifiers.Internal;
+			if (typeDef.IsNestedFamily)
+				return Modifiers.Protected;
+			if (typeDef.IsNestedFamilyOrAssembly)
+				return Modifiers.Protected | Modifiers.Internal;
+			if (typeDef.IsPublic || typeDef.IsNestedPublic)
+				return Modifiers.Public;
+			return Modifiers.None;
+		}
+
 		Modifiers ConvertModifiers(TypeDef typeDef)
 		{
-			Modifiers modifiers = Modifiers.None;
-			if (typeDef.IsNestedPrivate) {
-				if (context.Settings.MemberAddPrivateModifier)
-					modifiers |= Modifiers.Private;
-			} else if (typeDef.IsNotPublic) {
-				if (context.Settings.TypeAddInternalModifier)
-					modifiers |= Modifiers.Internal;
-			} else if (typeDef.IsNestedAssembly || typeDef.IsNestedFamilyAndAssembly)
-				modifiers |= Modifiers.Internal;
-			else if (typeDef.IsNestedFamily)
-				modifiers |= Modifiers.Protected;
-			else if (typeDef.IsNestedFamilyOrAssembly)
-				modifiers |= Modifiers.Protected | Modifiers.Internal;
-			else if (typeDef.IsPublic || typeDef.IsNestedPublic)
-				modifiers |= Modifiers.Public;
+			Modifiers modifiers = RawTypeVisibility(typeDef);
+
+			// CS0052: un camp nu poate fi mai accesibil decat tipul lui. In IL regula asta nu exista, deci
+			// metadatele o incalca linistit. In `_PrivateImplementationDetails_` - clasa pe care o
+			// genereaza compilatorul pentru datele initiale de array - tipurile imbricate
+			// ValueTypeNPrivateSealed0..4 sunt NestedPrivate, iar cele 14 campuri cu 'hasfieldrva' care le
+			// folosesc sunt internal. Asta da cele 14 CS0052 din exportul masurat.
+			// Largim tipul imbricat in loc sa restrangem campul, din doua motive: largirea numai permite
+			// mai mult, nu poate lua un acces care exista deja; iar campurile chiar sunt folosite din alt
+			// fisier (UGCUtils.cs se refera la
+			// _PrivateImplementationDetails_.D74C23FF...FieldHandle), deci a le face private ar strica
+			// referinta aia.
+			if (typeDef.IsNested && typeDef.DeclaringType != null) {
+				Modifiers needed = MostAccessibleFieldUsing(typeDef);
+				if (AccessibilityRank(needed) > AccessibilityRank(modifiers) && CanWidenNestedType(typeDef, needed))
+					modifiers = needed;
+			}
 
 			if (typeDef.IsAbstract && typeDef.IsSealed)
 				modifiers |= Modifiers.Static;
@@ -1173,6 +1195,79 @@ namespace ICSharpCode.Decompiler.Ast {
 				modifiers |= Modifiers.Sealed;
 
 			return modifiers;
+		}
+
+		// Cea mai permisiva vizibilitate intalnita la campurile tipului care il declara pe nestedType si
+		// care il folosesc pe nestedType in tipul lor. Ne uitam numai la campurile tipului declarant: in
+		// afara lui un tip imbricat privat nici nu e vizibil, deci acolo CS0052 nu poate aparea din cauza
+		// lui - eventual apare CS0122 "inaccesibil", care e alta problema si nu se repara prin largire.
+		Modifiers MostAccessibleFieldUsing(TypeDef nestedType)
+		{
+			var declaring = nestedType.DeclaringType;
+			Modifiers best = Modifiers.None;
+			int bestRank = -1;
+			for (int i = 0; i < declaring.Fields.Count; i++) {
+				var fieldDef = declaring.Fields[i];
+				if (!SignatureUsesType(fieldDef.FieldType, nestedType, 0))
+					continue;
+				var visibility = ConvertModifiers(fieldDef) & Modifiers.VisibilityMask;
+				int rank = AccessibilityRank(visibility);
+				if (rank > bestRank) {
+					bestRank = rank;
+					best = visibility;
+				}
+			}
+			return best;
+		}
+
+		// Largirea unui tip imbricat poate naste o eroare noua daca baza lui sau o interfata implementata
+		// ramane mai putin accesibila decat el (CS0060 / CS0061). Cand se intampla asta nu largim deloc:
+		// e mai bine sa ramanem cu un CS0052 stiut decat sa mutam eroarea in alta parte.
+		// Comparam cu vizibilitatea BRUTA a bazei, nu cu cea eventual largita, ca sa nu existe recursie;
+		// asta ne face doar mai prudenti, niciodata mai indrazneti. Cand baza e un TypeSpec sau un tip din
+		// alt modul nu avem ce compara si lasam largirea sa treaca: acolo accesibilitatea nu depinde de
+		// ce scriem noi in fisierul asta.
+		bool CanWidenNestedType(TypeDef typeDef, Modifiers target)
+		{
+			// Un membru protected intr-o structura e CS0666, deci nu largim niciodata spre protected acolo.
+			if ((target & Modifiers.Protected) != 0 && typeDef.DeclaringType.IsValueType)
+				return false;
+
+			int targetRank = AccessibilityRank(target);
+			var baseType = typeDef.BaseType as TypeDef;
+			if (baseType != null && AccessibilityRank(RawTypeVisibility(baseType)) < targetRank)
+				return false;
+			for (int i = 0; i < typeDef.Interfaces.Count; i++) {
+				var iface = typeDef.Interfaces[i].Interface as TypeDef;
+				if (iface != null && AccessibilityRank(RawTypeVisibility(iface)) < targetRank)
+					return false;
+			}
+			return true;
+		}
+
+		// Tipul apare in semnatura direct, sub array/pointer/byref/modificatori, sau ca argument generic.
+		// Adancimea e plafonata fiindca metadatele recuperate de Cpp2IL nu sunt garantat bine formate.
+		static bool SignatureUsesType(TypeSig sig, TypeDef target, int depth)
+		{
+			if (sig == null || target == null || depth > 8)
+				return false;
+			sig = sig.RemovePinnedAndModifiers();
+			if (sig == null)
+				return false;
+			if (sig is GenericInstSig genericInst) {
+				if (SignatureUsesType(genericInst.GenericType, target, depth + 1))
+					return true;
+				for (int i = 0; i < genericInst.GenericArguments.Count; i++) {
+					if (SignatureUsesType(genericInst.GenericArguments[i], target, depth + 1))
+						return true;
+				}
+				return false;
+			}
+			if (sig is TypeDefOrRefSig typeDefOrRef)
+				return typeDefOrRef.TypeDef == target;
+			if (sig is NonLeafSig nonLeaf)
+				return SignatureUsesType(nonLeaf.Next, target, depth + 1);
+			return false;
 		}
 
 		Modifiers ConvertModifiers(FieldDef fieldDef)
@@ -1601,6 +1696,9 @@ namespace ICSharpCode.Decompiler.Ast {
 			return astMethod;
 		}
 
+		// Nu mai e chemata de nicaieri: CreateProperty, singurul ei client, foloseste acum rangurile de
+		// mai jos. O lasam in fisier fiindca e cod din amonte si o metoda privata nefolosita nu produce
+		// niciun diagnostic de compilator.
 		Modifiers FixUpVisibility(Modifiers m)
 		{
 			Modifiers v = m & Modifiers.VisibilityMask;
@@ -1614,6 +1712,58 @@ namespace ICSharpCode.Decompiler.Ast {
 			return m & ~Modifiers.Private;
 		}
 
+		// Vizibilitatea unei proprietati nu se poate calcula prin SAU pe biti, asa cum face
+		// FixUpVisibility(getterModifiers | setterModifiers). Un `protected get` da bitul Protected, un
+		// `private set` da bitul Private, iar SAU-ul lor e exact acelasi tipar de biti ca al unui SINGUR
+		// accesor FamANDAssem, adica `private protected`. FixUpVisibility are o ramura care lasa
+		// Private|Protected neatins, tocmai pentru cazul FamANDAssem, deci proprietatea iesea declarata
+		// `private protected` si apoi ambele accesorii primeau modificator, fiindca niciunul nu se
+		// potrivea cu vizibilitatea proprietatii. Rezultatul, de sapte ori in exportul masurat:
+		// `private protected T P { protected get; private set; }` - in acelasi timp CS0274 (modificator
+		// pe amandoua accesoriile) si CS0273 (`protected` nu e mai restrictiv decat `private protected`).
+		// Regula din C# e alta: proprietatea are vizibilitatea celui mai permisiv accesor, si cel mult
+		// un accesor - cel strict mai restrictiv - isi pune modificator propriu. Rangurile de mai jos
+		// exprima ordinea aia, deci alegem un accesor intreg, nu o reuniune de biti fara sens.
+		static int AccessibilityRank(Modifiers m)
+		{
+			Modifiers v = m & Modifiers.VisibilityMask;
+			if ((v & Modifiers.Public) != 0)
+				return 5;
+			if (v == (Modifiers.Protected | Modifiers.Internal))
+				return 4;
+			if (v == Modifiers.Protected)
+				return 3;
+			if (v == Modifiers.Internal)
+				return 2;
+			if (v == (Modifiers.Private | Modifiers.Protected))
+				return 1;
+			// Private, si tot aici cade si Modifiers.None, adica un accesor privat cand
+			// MemberAddPrivateModifier e oprit si modificatorul nu se mai scrie deloc.
+			return 0;
+		}
+
+		// `protected` si `internal` nu sunt comparabile intre ele: niciunul nu include pe celalalt, asa
+		// ca niciunul nu e "mai restrictiv" in sensul cerut de C#. Perechea aia nu se poate scrie in C#
+		// (ar cere modificator pe amandoua accesoriile), asa ca o tratam ca necomparabila: accesoriul
+		// ramane fara modificator si se largeste tacit la vizibilitatea proprietatii. Preferam largirea
+		// in locul unui CS0274 garantat; cazul nu apare in exportul masurat (toate cele sapte perechi
+		// sunt protected/private, comparabile).
+		static bool IsMoreRestrictive(int accessorRank, int propertyRank)
+		{
+			if (accessorRank == 2 && propertyRank == 3)
+				return false;
+			if (accessorRank == 3 && propertyRank == 2)
+				return false;
+			return accessorRank < propertyRank;
+		}
+
+		// Alege intregul set de biti de vizibilitate al accesorului mai permisiv. Cand unul dintre
+		// accesorii lipseste, ii dam rangul -1 ca sa castige mereu celalalt.
+		static Modifiers MostAccessible(Modifiers a, int rankA, Modifiers b, int rankB)
+		{
+			return rankA >= rankB ? (a & Modifiers.VisibilityMask) : (b & Modifiers.VisibilityMask);
+		}
+
 		EntityDeclaration CreateProperty(PropertyDef propDef)
 		{
 			PropertyDeclaration astProp = new PropertyDeclaration();
@@ -1621,6 +1771,9 @@ namespace ICSharpCode.Decompiler.Ast {
 			var accessor = propDef.GetMethod ?? propDef.SetMethod;
 			Modifiers getterModifiers = Modifiers.None;
 			Modifiers setterModifiers = Modifiers.None;
+			// -1 inseamna "accesorul nu exista", ca sa castige mereu celalalt la comparatia de rang.
+			int getterRank = -1;
+			int setterRank = -1;
 			string name = propDef.Name;
 			if (IsExplicitInterfaceImplementation(accessor)) {
 				var methDecl = accessor.Overrides.First().MethodDeclaration;
@@ -1631,13 +1784,28 @@ namespace ICSharpCode.Decompiler.Ast {
 			} else if (!propDef.DeclaringType.IsInterface) {
 				getterModifiers = ConvertModifiers(propDef.GetMethod, true);
 				setterModifiers = ConvertModifiers(propDef.SetMethod, true);
-				astProp.Modifiers = FixUpVisibility(getterModifiers | setterModifiers);
+				if (propDef.GetMethod != null)
+					getterRank = AccessibilityRank(getterModifiers);
+				if (propDef.SetMethod != null)
+					setterRank = AccessibilityRank(setterModifiers);
+				// Bitii care nu tin de vizibilitate (static, virtual, override, extern, readonly...) se
+				// aduna in continuare din ambele accesorii; numai vizibilitatea se alege, nu se aduna.
+				astProp.Modifiers = ((getterModifiers | setterModifiers) & ~Modifiers.VisibilityMask)
+					| MostAccessible(getterModifiers, getterRank, setterModifiers, setterRank);
 				try {
 					if (accessor != null && accessor.IsVirtual && !accessor.IsNewSlot && (propDef.GetMethod == null || propDef.SetMethod == null)) {
 						foreach (var basePropDef in TypesHierarchyHelpers.FindBaseProperties(propDef)) {
 							if (basePropDef.GetMethod != null && basePropDef.SetMethod != null) {
-								var propVisibilityModifiers = ConvertModifiers(basePropDef.GetMethod, true) | ConvertModifiers(basePropDef.SetMethod, true);
-								astProp.Modifiers = FixUpVisibility((astProp.Modifiers & ~Modifiers.VisibilityMask) | (propVisibilityModifiers & Modifiers.VisibilityMask));
+								// Aceeasi capcana ca mai sus: reuniunea de biti a celor doua accesorii ale
+								// proprietatii de baza putea da Private|Protected fara ca vreun accesor sa fie
+								// FamANDAssem, si proprietatea derivata iesea `private protected` cu un accesor
+								// `protected` deasupra - CS0273. Aici proprietatea are un singur accesor, deci
+								// CS0274 nu poate aparea, dar CS0273 da.
+								var baseGetterModifiers = ConvertModifiers(basePropDef.GetMethod, true);
+								var baseSetterModifiers = ConvertModifiers(basePropDef.SetMethod, true);
+								var propVisibility = MostAccessible(baseGetterModifiers, AccessibilityRank(baseGetterModifiers),
+									baseSetterModifiers, AccessibilityRank(baseSetterModifiers));
+								astProp.Modifiers = (astProp.Modifiers & ~Modifiers.VisibilityMask) | propVisibility;
 								break;
 							} else {
 								var baseAcc = basePropDef.GetMethod ?? basePropDef.SetMethod;
@@ -1650,8 +1818,19 @@ namespace ICSharpCode.Decompiler.Ast {
 					// TODO: add some kind of notification (a comment?) about possible problems with decompiled code due to unresolved references.
 				}
 			}
+			// Pe ramura de interfata si pe cea de implementare explicita accesorii nu primesc modificatori
+			// deloc, deci raman pe rangul lui Modifiers.None. -1 ramane rezervat accesorului care lipseste.
+			if (propDef.GetMethod != null && getterRank < 0)
+				getterRank = AccessibilityRank(getterModifiers);
+			if (propDef.SetMethod != null && setterRank < 0)
+				setterRank = AccessibilityRank(setterModifiers);
+
 			astProp.NameToken = Identifier.Create(name).WithAnnotation(propDef);
 			astProp.ReturnType = ConvertType(propDef.PropertySig.GetRetType(), stringBuilder, propDef);
+
+			// Se ia din astProp.Modifiers, nu din max(getterRank, setterRank), fiindca blocul de mai sus
+			// poate sa fi inlocuit vizibilitatea cu cea a proprietatii de baza.
+			int propertyRank = AccessibilityRank(astProp.Modifiers);
 
 			if (propDef.GetMethod != null) {
 				astProp.Getter = new Accessor();
@@ -1659,7 +1838,11 @@ namespace ICSharpCode.Decompiler.Ast {
 				astProp.Getter.AddAnnotation(propDef.GetMethod);
 				astProp.Getter.Modifiers = getterModifiers & Modifiers.ReadonlyMember;
 
-				if ((getterModifiers & Modifiers.VisibilityMask) != (astProp.Modifiers & Modifiers.VisibilityMask))
+				// Numai accesoriul strict mai restrictiv primeste modificator. Comparatia veche era pe
+				// egalitate de biti, si atunci amandoua accesoriile puteau primi modificator in acelasi
+				// timp (CS0274). Cu ranguri, cel putin unul dintre accesorii are rangul proprietatii,
+				// deci cel mult unul singur poate fi strict mai mic.
+				if (IsMoreRestrictive(getterRank, propertyRank))
 					astProp.Getter.Modifiers = getterModifiers & (Modifiers.VisibilityMask | Modifiers.ReadonlyMember);
 			}
 			if (propDef.SetMethod != null) {
@@ -1672,7 +1855,7 @@ namespace ICSharpCode.Decompiler.Ast {
 					ConvertCustomAttributes(Context.MetadataTextColorProvider, astProp.Setter, lastParam.ParamDef, context.Settings, stringBuilder, "param");
 				}
 
-				if ((setterModifiers & Modifiers.VisibilityMask) != (astProp.Modifiers & Modifiers.VisibilityMask))
+				if (IsMoreRestrictive(setterRank, propertyRank))
 					astProp.Setter.Modifiers = setterModifiers & (Modifiers.VisibilityMask | Modifiers.ReadonlyMember);
 			}
 			astProp.Modifiers &= ~Modifiers.ReadonlyMember;
@@ -1816,6 +1999,29 @@ namespace ICSharpCode.Decompiler.Ast {
 		void AddMethodBody(EntityDeclaration methodNode, out EntityDeclaration updatedNode, MethodDef method, IEnumerable<ParameterDeclaration> parameters, bool valueParameterIsKeyword, MethodKind methodKind) {
 			updatedNode = methodNode;
 			ClearCurrentMethodState();
+
+			// `protected override void Finalize()` nu se poate scrie asa in C# (CS0249): destructorul se
+			// scrie `~Tip()`. Conversia exista de mult in dnSpy, dar statea DOAR pe ramura
+			// DecompiledBodyKind.Stub, adica numai pe metodele carora nu li se decompileaza corpul. In
+			// exportul masurat toate corpurile vin pe ramura Full, deci conversia nu s-a aplicat
+			// niciodata: 0 destructori in 2.675 de fisiere si 3 `override void Finalize` ramase, fiecare
+			// cu CS0249. Mutata aici, inainte de switch, se aplica pe orice fel de corp. Tot aici trebuie
+			// sa stea si din cauza ramurii asincrone din Full: aceea captureaza methodNode intr-un
+			// closure, deci o conversie de dupa ar lipi corpul pe nodul vechi, deja detasat.
+			if (methodKind == MethodKind.Method && IsFinalizeOverride(method)) {
+				var dd = new DestructorDeclaration();
+				dd.AddAnnotation(method);
+				methodNode.Attributes.MoveTo(dd.Attributes);
+				// Un destructor nu accepta niciun modificator de accesibilitate si nici
+				// virtual/override/sealed (CS0106). Masca veche scotea doar Protected si Override, deci
+				// un `protected sealed override void Finalize()` ar fi iesit `sealed ~Tip()`. Pastram
+				// numai cele doua modificari care sunt legale pe un destructor.
+				dd.Modifiers = methodNode.Modifiers & (Modifiers.Extern | Modifiers.Unsafe);
+				dd.NameToken = Identifier.Create(NRefactory.TypeSystem.ReflectionHelper.SplitTypeParameterCountFromReflectionName(method.DeclaringType.Name));
+				updatedNode = dd;
+				methodNode = dd;
+			}
+
 			if (method.Body == null) {
 				ConvertAttributes(methodNode, method);
 				return;
@@ -1932,15 +2138,8 @@ namespace ICSharpCode.Decompiler.Ast {
 						bs.Statements.Add(ret);
 					}
 				}
-				if (method.IsVirtual && method.MethodSig.GetParamCount() == 0 && returnElementType == ElementType.Void && method.Name == name_Finalize) {
-					var dd = new DestructorDeclaration();
-					dd.AddAnnotation(methodNode.Annotation<MethodDef>());
-					methodNode.Attributes.MoveTo(dd.Attributes);
-					dd.Modifiers = methodNode.Modifiers & ~(Modifiers.Protected | Modifiers.Override);
-					dd.NameToken = Identifier.Create(NRefactory.TypeSystem.ReflectionHelper.SplitTypeParameterCountFromReflectionName(context.CurrentType.Name));
-					updatedNode = dd;
-					methodNode = dd;
-				}
+				// Conversia Finalize -> destructor s-a mutat inaintea switch-ului, ca sa prinda si corpurile
+				// decompilate (ramura Full), nu numai stub-urile.
 				methodNode.SetChildByRole(Roles.Body, bs);
 				ConvertAttributes(methodNode, method);
 				return;
@@ -1954,6 +2153,27 @@ namespace ICSharpCode.Decompiler.Ast {
 			}
 		}
 		static readonly UTF8String name_Finalize = new UTF8String("Finalize");
+
+		// Exact cazul pe care Roslyn il respinge cu CS0249: o metoda care SUPRASCRIE object.Finalize.
+		// Nu prinde un `Finalize` nou introdus (IsNewSlot): pe acela C# il accepta si il semnaleaza doar
+		// cu avertismentul CS0465, iar transformarea lui in destructor ar schimba intelesul codului si
+		// ar putea intra in coliziune cu destructorul real al tipului.
+		// Nu prinde nici structurile si interfetele: `~S()` intr-o structura e CS0575, adica am schimba
+		// doar codul erorii, nu am repara nimic.
+		static bool IsFinalizeOverride(MethodDef method)
+		{
+			if (method == null || method.DeclaringType == null || method.MethodSig == null)
+				return false;
+			if (method.Name != name_Finalize)
+				return false;
+			if (!method.IsVirtual || method.IsNewSlot || method.IsStatic)
+				return false;
+			if (method.DeclaringType.IsValueType || method.DeclaringType.IsInterface)
+				return false;
+			if (method.MethodSig.GetParamCount() != 0 || method.HasGenericParameters)
+				return false;
+			return method.ReturnType.RemovePinnedAndModifiers().GetElementType() == ElementType.Void;
+		}
 
 		public static void CreateBadMethod(DecompilerContext context, MethodDef method, Exception ex, StringBuilder sb, out BlockStatement bs, out MethodDebugInfoBuilder builder) {
 			sb.Clear();
