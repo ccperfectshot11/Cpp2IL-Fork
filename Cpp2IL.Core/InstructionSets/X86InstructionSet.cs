@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.Api;
@@ -82,6 +83,46 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             ? (instruction.Op0Kind == OpKind.Register ? instruction.Op0Register.GetSize() : instruction.MemorySize.GetSize()) * 8
             : 0;
 
+    /// <summary>
+    /// Aprinde modelul pe benzi si pentru permutarile impachetate pe care liftul le traduce de acum -
+    /// psrldq, unpcklpd, unpckhpd. Fara el o metoda care foloseste numai astea nu trece testul din
+    /// <see cref="GetIsilFromMethod"/>, benzile raman stinse, iar traducerea lor nu se emite niciodata,
+    /// fiindca ea nu are ce sa insemne intr-un model in care registrul xmm e un singur scalar.
+    ///
+    /// Sta pe un comutator separat de <see cref="XmmLanes"/> fiindca aprinderea benzilor schimba si
+    /// altceva in metodele astea, nu doar instructiunea nou tradusa: mutarile de 16 octeti se despica in
+    /// patru, ceea ce pe o copiere pe care analiza n-o poate rezolva inseamna patru necunoscute in loc de
+    /// una. Cele doua efecte se pot masura atunci unul fara celalalt. CPP2IL_PACKED_LANES=0 le lasa
+    /// marcaje, exact ca pana acum.
+    /// </summary>
+    private static readonly bool PackedLanes = Environment.GetEnvironmentVariable("CPP2IL_PACKED_LANES") != "0";
+
+    // Cache concurent fiindca liftul metodelor ruleaza in paralel.
+    private readonly ConcurrentDictionary<(string Name, bool Single), MethodAnalysisContext?> _mathMethods = new();
+
+    /// <summary>
+    /// Cauta metoda din System.Math / System.MathF care corespunde unei instructiuni de virgula mobila ce
+    /// n-are echivalent direct in CIL - deocamdata numai radicalul. Semnaturi exacte, ca sa nu iasa un apel
+    /// care ar avea nevoie de o conversie numerica implicita.
+    ///
+    /// Unde nu exista MathF (corlib mai vechi) cade pe varianta pe double, si asta nu strica rezultatul:
+    /// un float largit la double, radacina rotunjita o singura data si intoarsa la float da exact acelasi
+    /// bit cu ce da sqrtss, fiindca double are loc de peste doua ori mantisa lui float.
+    /// </summary>
+    private MethodAnalysisContext? ResolveMathMethod(ApplicationAnalysisContext app, string name, bool single)
+        => _mathMethods.GetOrAdd((name, single), key =>
+        {
+            var corlib = app.SystemTypes.SystemDoubleType.DeclaringAssembly;
+
+            MethodAnalysisContext? Lookup(string typeName, TypeAnalysisContext parameterType)
+                => corlib.GetTypeByFullName(typeName)?.Methods.FirstOrDefault(m =>
+                    m.IsStatic && m.Name == key.Name && m.Parameters.Count == 1
+                    && m.Parameters[0].ParameterType == parameterType);
+
+            return (key.Single ? Lookup("System.MathF", app.SystemTypes.SystemSingleType) : null)
+                   ?? Lookup("System.Math", app.SystemTypes.SystemDoubleType);
+        });
+
     private const int LaneBytes = 4;
 
     // Lane 0 is the register itself, so a value that only ever lived in the low lane is the same operand
@@ -150,7 +191,12 @@ public class X86InstructionSet : Cpp2IlInstructionSet
         //
         // Only the register-to-register form counts. `movss xmm, [mem]` zeroes the lanes above it, exactly
         // as the ISA says, so it defines the whole register and nothing is lost by modelling it that way.
+        //
+        // Permutarile impachetate pe jumatati si pe octeti - unpcklpd, unpckhpd, psrldq - sunt a treia cale
+        // de a atinge o singura banda, si pana acum nu aprindeau nimic, fiindca liftul nici nu le traducea.
+        // Vezi <see cref="PackedLanes"/> pentru ce altceva se schimba cand le lasi sa aprinda benzile.
         var permutesLanes = XmmLanes && body.Any(i => i.Mnemonic is Mnemonic.Shufps or Mnemonic.Unpcklps
+            || (PackedLanes && i.Mnemonic is Mnemonic.Psrldq or Mnemonic.Unpcklpd or Mnemonic.Unpckhpd)
             || (i.Mnemonic is Mnemonic.Movss or Mnemonic.Movsd && i.Op0Kind == OpKind.Register && i.Op1Kind == OpKind.Register));
 
         foreach (var instruction in body)
@@ -351,6 +397,8 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             // moves; as one it silently dropped three quarters of every small-struct copy in the game.
             case Mnemonic.Movaps: // Movaps is basically just a mov but with the potential future detail that the size is dependent on reg size
             case Mnemonic.Movups: // Movaps but unaligned
+            case Mnemonic.Movapd: // aceiasi 16 octeti, doar ca binarul spune ca inauntru sunt double
+            case Mnemonic.Movupd: // idem, nealiniat
             case Mnemonic.Movdqa: // Movaps but multiple integers at once in theory
             case Mnemonic.Movdqu:
                 {
@@ -517,6 +565,36 @@ public class X86InstructionSet : Cpp2IlInstructionSet
             case Mnemonic.Orps: //Floating point or
                 Add(instruction.IP, ISIL.OpCode.Or, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
+            case Mnemonic.Bt: // CF = bitul citit; operandul ramane neatins
+                {
+                    // Cu operandul in memorie si indicele intr-un registru, bitul poate cadea in afara
+                    // operandului adresat - `bt` numara atunci intr-un sir de biti care incepe acolo - si
+                    // nu asta calculeaza deplasarea de mai jos. Cu operandul intr-un registru indicele se ia
+                    // oricum modulo latimea lui, iar cu indice imediat locul e fix, deci restul cazurilor
+                    // sunt exacte.
+                    if (instruction.Op0Kind != OpKind.Register && !instruction.Op1Kind.IsImmediate())
+                        goto default;
+
+                    var tested = ConvertOperand(instruction, 0);
+                    var bitIndex = ConvertOperand(instruction, 1);
+                    var testedBit = new ISIL.Register(null, "TEMP");
+
+                    // Bitul cerut ajunge in pozitia 0 indiferent cu ce s-a umplut deasupra: umplerea atinge
+                    // doar bitii de peste el, iar noi ne uitam la bitul 0 al rezultatului.
+                    Add(instruction.IP, ISIL.OpCode.ShiftRight, testedBit, tested, bitIndex);
+                    Add(instruction.IP, ISIL.OpCode.And, new ISIL.Register(null, "CF"), testedBit, Imm(1));
+
+                    // Masina scrie numai CF, dar conditiile pe care compilatorul le pune dupa bt nu ajung
+                    // toate la CF: `setb` chiar il citeste, insa `jb` si `jae` sunt coborate din perechea
+                    // SF/OF, fiindca impart ramura cu jl si jge - vezi nota din FlagConditionRecovery despre
+                    // conditiile fara semn. Ca sa nu iasa o jumatate de traducere, punem acelasi bit si in
+                    // SF si tinem OF pe zero: atunci "SF != OF", care e chiar conditia lui jb, inseamna
+                    // "bitul e 1", iar "SF == OF", conditia lui jae, inseamna "bitul e 0". ZF ramane
+                    // neatins, fiindca nici masina nu-l defineste aici.
+                    Add(instruction.IP, ISIL.OpCode.And, new ISIL.Register(null, "SF"), testedBit, Imm(1));
+                    Add(instruction.IP, ISIL.OpCode.Move, new ISIL.Register(null, "OF"), Imm(0));
+                    break;
+                }
             case Mnemonic.Bts: // CF = old bit, then set it
                 {
                     var dest = ConvertOperand(instruction, 0);
@@ -547,32 +625,32 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 Add(instruction.IP, ISIL.OpCode.Negate, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0));
                 break;
             case Mnemonic.Imul:
+            // Pe jumatatea de jos a produsului `mul` da acelasi lucru cu `imul` - bitii de jos nu depind de
+            // semn - iar jumatatea de sus, singura care le deosebeste, nu o scriem oricum. De aceea `mul`,
+            // care exista numai in forma cu un operand, intra pe aceeasi ramura.
+            case Mnemonic.Mul:
                 if (instruction.OpCount == 1)
                 {
-                    int opSize = instruction.Op0Kind == OpKind.Register ? instruction.Op0Register.GetSize() : instruction.MemorySize.GetSize();
-                    switch (opSize) // TODO: I don't know how to work with dual registers here, I left hints though
-                    {
-                        case 1: // Op0 * AL -> AX
-                            Add(instruction.IP, ISIL.OpCode.Multiply, Register.AX.MakeIndependent(), ConvertOperand(instruction, 0), Register.AL.MakeIndependent());
-                            return;
-                        case 2: // Op0 * AX -> DX:AX
-
-                            break;
-                        case 4: // Op0 * EAX -> EDX:EAX
-
-                            break;
-                        case 8: // Op0 * RAX -> RDX:RAX
-
-                            break;
-                        default: // prob 0, I think fallback to architecture alignment would be good here(issue: idk how to find out arch alignment)
-
-                            break;
-                    }
-
-                    // if got to here, it didn't work
-                    goto default;
+                    // Forma cu un operand inmulteste acumulatorul cu operandul si pune rezultatul, pe latime
+                    // dubla, in perechea D:A. Jumatatea de jos incape in A si e exacta, deci pe ea o scriem.
+                    // Jumatatea de sus n-are cum sa fie calculata aici - la `imul rcx` ar cere un intreg pe
+                    // 128 de biti, care nu exista nici in ISIL, nici in CIL - asa ca D ramane nescris.
+                    //
+                    // Nescris, nu scris gresit: exact asa il lasa si marcajul pe care ramura asta il
+                    // inlocuieste, deci o metoda care citeste D - tiparul impartirii facute ca inmultire cu
+                    // un numar magic - nu iese mai gresita decat era, iar una care citeste doar A se repara.
+                    //
+                    // Un singur nume de registru, RAX, si la 1, si la 2, 4 sau 8 octeti: X86Utils.GetRegisterName
+                    // trece orice registru prin GetFullRegister(), deci al, ax si eax sunt toate "rax" in
+                    // ISIL, si asta e si numele sub care il citeste restul metodei. Vechea ramura de un octet
+                    // scria in schimb "ax" si citea "al", nume pe care nu le produce nimic altceva, deci
+                    // rezultatul ei nu ajungea nicaieri.
+                    var accumulator = new ISIL.Register(null, X86Utils.GetRegisterName(Register.RAX));
+                    Add(instruction.IP, ISIL.OpCode.Multiply, accumulator, accumulator, ConvertOperand(instruction, 0));
+                    break;
                 }
-                else if (instruction.OpCount == 3) Add(instruction.IP, ISIL.OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
+
+                if (instruction.OpCount == 3) Add(instruction.IP, ISIL.OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
                 else Add(instruction.IP, ISIL.OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
 
                 break;
@@ -599,23 +677,93 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                     Add(instruction.IP, ISIL.OpCode.Modulo, remainder, dividend, divisor);
                     break;
                 }
+            // Aritmetica scalara pe virgula mobila: toate patru operatiile si amandoua latimile printr-o
+            // singura ramura. Ce le deosebeste sunt exact doua lucruri, si niciunul nu tine de operatie:
+            // forma VEX are trei operanzi, cu destinatia separata de primul termen, iar cea SSE are doi; si
+            // sufixul spune pe cati octeti se citeste o constanta din memorie - patru la ss, opt la sd.
+            //
+            // Ramura era scrisa pana acum o data pentru fiecare mnemonica, si de aceea stia forme diferite
+            // de la una la alta: mulss le trata pe amandoua, divss numai pe cea cu doi operanzi, vdivss
+            // numai pe cea cu trei. Aritmetica pe double - mulsd, addsd, subsd, divsd - nu era tratata
+            // deloc, desi se traduce in acelasi Multiply/Add/Subtract/Divide ca perechile ei pe float.
             case Mnemonic.Mulss:
             case Mnemonic.Vmulss:
-                if (instruction.OpCount == 3)
-                    Add(instruction.IP, ISIL.OpCode.Multiply, ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, true, context), ConvertScalarFloatOperand(instruction, 2, true, context));
-                else if (instruction.OpCount == 2)
-                    Add(instruction.IP, ISIL.OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, true, context));
-                else
-                    goto default;
+            case Mnemonic.Mulsd:
+            case Mnemonic.Vmulsd:
+            case Mnemonic.Divss: // DEST = DEST / SRC pe 32 de biti
+            case Mnemonic.Vdivss: // DEST = SRC1 / SRC2 pe 32 de biti
+            case Mnemonic.Divsd: // aceleasi doua forme, pe 64 de biti
+            case Mnemonic.Vdivsd:
+            case Mnemonic.Addss:
+            case Mnemonic.Vaddss:
+            case Mnemonic.Addsd:
+            case Mnemonic.Vaddsd:
+            case Mnemonic.Subss:
+            case Mnemonic.Vsubss:
+            case Mnemonic.Subsd:
+            case Mnemonic.Vsubsd:
+                {
+                    var scalarOpCode = instruction.Mnemonic switch
+                    {
+                        Mnemonic.Mulss or Mnemonic.Vmulss or Mnemonic.Mulsd or Mnemonic.Vmulsd => ISIL.OpCode.Multiply,
+                        Mnemonic.Divss or Mnemonic.Vdivss or Mnemonic.Divsd or Mnemonic.Vdivsd => ISIL.OpCode.Divide,
+                        Mnemonic.Addss or Mnemonic.Vaddss or Mnemonic.Addsd or Mnemonic.Vaddsd => ISIL.OpCode.Add,
+                        _ => ISIL.OpCode.Subtract,
+                    };
 
-                break;
+                    // Latimea e a operandului, nu a operatiei: o constanta citita din memorie pe latimea
+                    // gresita nu iese putin deplasata, ci alt numar cu totul, fiindca aceiasi octeti dau
+                    // atunci alt exponent si alta mantisa.
+                    var scalarSingle = instruction.Mnemonic is Mnemonic.Mulss or Mnemonic.Vmulss
+                        or Mnemonic.Divss or Mnemonic.Vdivss
+                        or Mnemonic.Addss or Mnemonic.Vaddss
+                        or Mnemonic.Subss or Mnemonic.Vsubss;
 
-            case Mnemonic.Divss: // Divide Scalar Single Precision Floating-Point Values. DEST[31:0] = DEST[31:0] / SRC[31:0]
-                Add(instruction.IP, ISIL.OpCode.Divide, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, true, context));
-                break;
-            case Mnemonic.Vdivss: // VEX Divide Scalar Single Precision Floating-Point Values. DEST[31:0] = SRC1[31:0] / SRC2[31:0]
-                Add(instruction.IP, ISIL.OpCode.Divide, ConvertOperand(instruction, 0), ConvertScalarFloatOperand(instruction, 1, true, context), ConvertScalarFloatOperand(instruction, 2, true, context));
-                break;
+                    ISIL.IOperand scalarDest;
+                    ISIL.IOperand scalarLeft;
+                    ISIL.IOperand scalarRight;
+
+                    if (instruction.OpCount == 3)
+                    {
+                        // dest, src1, src2
+                        scalarDest = ConvertOperand(instruction, 0);
+                        scalarLeft = ConvertScalarFloatOperand(instruction, 1, scalarSingle, context);
+                        scalarRight = ConvertScalarFloatOperand(instruction, 2, scalarSingle, context);
+                    }
+                    else if (instruction.OpCount == 2)
+                    {
+                        // destinatia e si primul termen
+                        scalarDest = ConvertOperand(instruction, 0);
+                        scalarLeft = scalarDest;
+                        scalarRight = ConvertScalarFloatOperand(instruction, 1, scalarSingle, context);
+                    }
+                    else
+                        goto default;
+
+                    Add(instruction.IP, scalarOpCode, scalarDest, scalarLeft, scalarRight);
+                    break;
+                }
+
+            case Mnemonic.Sqrtss: // DEST[31:0] = radical din SRC[31:0]
+            case Mnemonic.Sqrtsd: // DEST[63:0] = radical din SRC[63:0]
+                {
+                    // Radicalul e singura operatie de aici care n-are opcode in CIL, deci n-are nici in
+                    // ISIL; se traduce inapoi in apelul de biblioteca din care compilatorul l-a scos. Daca
+                    // metoda nu se rezolva in corlib-ul jocului ramane marcaj, ca sa nu emitem un apel spre
+                    // nimic.
+                    if (context == null || instruction.OpCount != 2)
+                        goto default;
+
+                    var sqrtSingle = instruction.Mnemonic == Mnemonic.Sqrtss;
+                    var sqrt = ResolveMathMethod(context.AppContext, "Sqrt", sqrtSingle);
+
+                    if (sqrt == null)
+                        goto default;
+
+                    Add(instruction.IP, ISIL.OpCode.Call, sqrt, ConvertOperand(instruction, 0),
+                        ConvertScalarFloatOperand(instruction, 1, sqrtSingle, context));
+                    break;
+                }
 
             case Mnemonic.Ret:
                 // TODO: Verify correctness of operation with Vectors.
@@ -661,36 +809,18 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                     Add(instruction.IP, ISIL.OpCode.Add, left, left, right);
 
                 break;
-            case Mnemonic.Addss:
-            case Mnemonic.Subss:
+            case Mnemonic.Sbb: // DEST = DEST - SRC - CF
                 {
-                    // Addss and subss are just floating point add/sub, but we don't need to handle the stack stuff
-                    // But we do need to handle 2 vs 3 operand forms
-                    ISIL.IOperand dest;
-                    ISIL.IOperand src1;
-                    ISIL.IOperand src2;
+                    // Imprumutul vine din CF, iar CF e scris aici numai de cmp si de test, nu si de sub sau
+                    // add - alea se ridica drept Subtract/Add curate, fara grupul de fanioane. Deci iese
+                    // corect tiparul in care sbb chiar citeste un imprumut proaspat, adica "cmp" urmat de
+                    // "sbb eax, eax", care da masca 0 sau -1; iese gresit scaderea pe latime dubla, "sub"
+                    // urmat de "sbb", unde CF e ramas de la altceva. Inainte era marcaj in ambele cazuri,
+                    // deci al doilea nu devine mai gresit decat era.
+                    var borrowed = ConvertOperand(instruction, 0);
 
-                    if (instruction.OpCount == 3)
-                    {
-                        //dest, src1, src2
-                        dest = ConvertOperand(instruction, 0);
-                        src1 = ConvertScalarFloatOperand(instruction, 1, true, context);
-                        src2 = ConvertScalarFloatOperand(instruction, 2, true, context);
-                    }
-                    else if (instruction.OpCount == 2)
-                    {
-                        //DestAndSrc1, Src2
-                        dest = ConvertOperand(instruction, 0);
-                        src1 = dest;
-                        src2 = ConvertScalarFloatOperand(instruction, 1, true, context);
-                    }
-                    else
-                        goto default;
-
-                    if (instruction.Mnemonic == Mnemonic.Subss)
-                        Add(instruction.IP, ISIL.OpCode.Subtract, dest, src1, src2);
-                    else
-                        Add(instruction.IP, ISIL.OpCode.Add, dest, src1, src2);
+                    Add(instruction.IP, ISIL.OpCode.Subtract, borrowed, borrowed, ConvertOperand(instruction, 1));
+                    Add(instruction.IP, ISIL.OpCode.Subtract, borrowed, borrowed, new ISIL.Register(null, "CF"));
                     break;
                 }
             // The following pair of instructions does not update the Carry Flag (CF):
@@ -726,6 +856,69 @@ public class X86InstructionSet : Cpp2IlInstructionSet
 
                     for (var lane = 0; lane < 4; lane++)
                         Add(instruction.IP, ISIL.OpCode.Move, Lane(shuffleDestination, lane), new ISIL.Register(null, $"XMM_TEMP_{lane}"));
+
+                    break;
+                }
+
+            case Mnemonic.Psrldq: // muta tot registrul de 128 de biti spre dreapta, cu un numar de OCTETI
+            case Mnemonic.Unpcklpd: // DEST = { DEST[63:0], SRC[63:0] }
+            case Mnemonic.Unpckhpd: // DEST = { DEST[127:64], SRC[127:64] }
+                {
+                    // Toate trei sunt permutari de benzi, ca shufps si unpcklps de mai sus; doar granita pe
+                    // care taie difera - jumatati de 64 de biti la unpck*pd, octeti la psrldq. Peste benzile
+                    // de 32 de biti pe care le modeleaza fisierul, jumatatea de 64 e o pereche de benzi, iar
+                    // deplasarea lui psrldq cade fix pe granita cat timp e multiplu de patru octeti. O
+                    // deplasare care ar taia o banda in doua n-are corespondent, deci ramane marcaj.
+                    if (!laneTracking || instruction.Op0Kind != OpKind.Register)
+                        goto default;
+
+                    var packedDestination = ConvertOperand(instruction, 0);
+                    (ISIL.IOperand? From, int Lane)[] packedPicks;
+
+                    if (instruction.Mnemonic == Mnemonic.Psrldq)
+                    {
+                        if (!instruction.Op1Kind.IsImmediate())
+                            goto default;
+
+                        var shiftedBytes = (int)instruction.Immediate8;
+
+                        if (shiftedBytes % LaneBytes != 0)
+                            goto default;
+
+                        // Benzile urca spre zero cu atatea pozitii cati octeti s-au deplasat, iar deasupra
+                        // intra zerouri - inclusiv peste tot, daca deplasarea e de 16 octeti sau mai mult.
+                        var shiftedLanes = shiftedBytes / LaneBytes;
+                        packedPicks = new (ISIL.IOperand?, int)[4];
+
+                        for (var lane = 0; lane < 4; lane++)
+                            packedPicks[lane] = lane + shiftedLanes < 4 ? (packedDestination, lane + shiftedLanes) : (null, 0);
+                    }
+                    else
+                    {
+                        if (instruction.Op1Kind != OpKind.Register)
+                            goto default;
+
+                        // unpcklpd ia jumatatea de jos a fiecaruia, unpckhpd pe cea de sus; in benzi de 32
+                        // asta inseamna perechea 0-1, respectiv 2-3, din destinatie si apoi din sursa.
+                        var packedSource = ConvertOperand(instruction, 1);
+                        var half = instruction.Mnemonic == Mnemonic.Unpckhpd ? 2 : 0;
+
+                        packedPicks =
+                        [
+                            (packedDestination, half), (packedDestination, half + 1),
+                            (packedSource, half), (packedSource, half + 1),
+                        ];
+                    }
+
+                    // Intai citim toate benzile, abia apoi le scriem: la psrldq sursa si destinatia sunt
+                    // acelasi registru, si la unpck sunt de multe ori, deci o banda scrisa pe loc ar fi
+                    // recitita drept intrare a alteia.
+                    for (var lane = 0; lane < 4; lane++)
+                        Add(instruction.IP, ISIL.OpCode.Move, new ISIL.Register(null, $"XMM_TEMP_{lane}"),
+                            packedPicks[lane].From is { } packedFrom ? Lane(packedFrom, packedPicks[lane].Lane) : Imm(0));
+
+                    for (var lane = 0; lane < 4; lane++)
+                        Add(instruction.IP, ISIL.OpCode.Move, Lane(packedDestination, lane), new ISIL.Register(null, $"XMM_TEMP_{lane}"));
 
                     break;
                 }
@@ -975,11 +1168,17 @@ public class X86InstructionSet : Cpp2IlInstructionSet
 
             case Mnemonic.Maxss: // dest < src ? src : dest
             case Mnemonic.Minss: // dest > src ? src : dest
+            case Mnemonic.Maxsd: // aceleasi doua, pe double
+            case Mnemonic.Minsd:
                 {
+                    var minMaxSingle = instruction.Mnemonic is Mnemonic.Maxss or Mnemonic.Minss;
                     var dest = ConvertOperand(instruction, 0);
-                    var src = ConvertOperand(instruction, 1);
+                    // Prin ConvertScalarFloatOperand, nu prin ConvertOperand: al doilea operand e de multe
+                    // ori o constanta citita din memorie - limita unui Clamp - si atunci trebuie citita pe
+                    // latimea mnemonicii, ca peste tot in fisierul asta unde un operand e scalar flotant.
+                    var src = ConvertScalarFloatOperand(instruction, 1, minMaxSingle, context);
                     AddCompareInstruction(instruction.IP, dest, src); // compare dest & src
-                    if (instruction.Mnemonic == Mnemonic.Maxss)
+                    if (instruction.Mnemonic is Mnemonic.Maxss or Mnemonic.Maxsd)
                     {
                         var temp = new ISIL.Register(null, "TEMP");
                         Add(instruction.IP, ISIL.OpCode.CheckEqual, temp, new ISIL.Register(null, "SF"), new ISIL.Register(null, "OF")); // TEMP = SF == OF
@@ -1169,6 +1368,22 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 }
 
                 goto default;
+            case Mnemonic.Xadd: // TEMP = DEST + SRC; SRC = DEST; DEST = TEMP
+                {
+                    // Aproape toate aparitiile vin cu prefixul `lock` in fata, adica din Interlocked.Add,
+                    // Increment sau Decrement. Prefixul nu e o instructiune si nu se vede aici: comutatorul
+                    // merge pe mnemonica, iar pentru "lock xadd" mnemonica e chiar Xadd. Atomicitatea nu se
+                    // poate exprima in ISIL, dar valoarea si vechea valoare intoarsa - da, si aia e tot ce
+                    // citeste apelantul.
+                    var accumulated = ConvertOperand(instruction, 0);
+                    var addend = ConvertOperand(instruction, 1);
+                    var previous = new ISIL.Register(null, "TEMP");
+
+                    Add(instruction.IP, ISIL.OpCode.Move, previous, accumulated); // TEMP = DEST
+                    Add(instruction.IP, ISIL.OpCode.Add, accumulated, accumulated, addend); // DEST = DEST + SRC
+                    Add(instruction.IP, ISIL.OpCode.Move, addend, previous); // SRC = vechiul DEST
+                    break;
+                }
             case Mnemonic.Xchg:
                 Add(instruction.IP, ISIL.OpCode.Move, new ISIL.Register(null, "TEMP"), ConvertOperand(instruction, 0)); // TEMP = op0
                 Add(instruction.IP, ISIL.OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1)); // op0 = op1
