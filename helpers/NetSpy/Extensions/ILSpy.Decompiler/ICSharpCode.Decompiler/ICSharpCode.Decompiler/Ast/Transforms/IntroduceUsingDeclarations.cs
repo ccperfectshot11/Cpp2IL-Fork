@@ -58,6 +58,47 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 			// Don't clear lastCheckedModule, typesWithNamespace_currentModule, typesWithNamespace_allAsms_list since they're cached between resets
 		}
 
+		// Spatii de nume INTERNE ale bibliotecii standard. Tipurile din ele exista in binarul jocului -
+		// il2cpp le-a inclus, si codul recuperat chiar le foloseste - dar niciun assembly de referinta nu
+		// le expune, fiindca sunt internal in System.Linq.Expressions. O directiva `using` pentru ele e
+		// CS0234 "The type or namespace name ... does not exist", adica o eroare de DECLARATIE, iar Roslyn
+		// se opreste inaintea corpurilor daca exista macar una. Verificat experimental: doua erori evidente
+		// de corp (CS0029 si CS0103) puse intentionat intr-un fisier nou nu au fost raportate deloc cat
+		// timp aceste doua CS0234 erau in picioare. Cu ele acolo nu se vede niciodata nicio eroare reala
+		// din cele ~32.000 de corpuri ale exportului.
+		//
+		// Folosirile tipurilor raman si vor erora la etapa de corpuri (in Quantum/ReflectionUtils.cs:
+		// Interpreter de 9 ori, TypeExtensions de 2, TypeUtils o data). Asta e chiar castigul: o eroare de
+		// corp nu blocheaza pe nimeni, una de declaratie blocheaza tot.
+		//
+		// LISTA ASTA TREBUIE SA RAMANA SCRISA DE MANA, si iata de ce.
+		// Nu poate fi inlocuita cu "sterge using-urile care nu se rezolva": la decompilare se rezolva
+		// toate, fiindca resolverul vede DLL-urile refacute de Cpp2IL, unde tipurile astea exista.
+		// Diferenta apare abia la compilare, unde setul de referinte e altul, si aici nu avem de unde sti.
+		// Si nu are voie sa creasca intr-o regula care taie using-uri dupa vreun tipar: cand
+		// FullyQualifyAllTypes e pornit, singurul lucru din output care mai depinde de un `using` este
+		// forma infixata a metodelor de extensie, pe care IntroduceExtensionMethods o produce DUPA ce
+		// using-urile s-au emis deja - deci o regula larga ar putea rupe apeluri pe care nu le putem
+		// enumera dinainte. Cele doua intrari de mai jos sunt in afara pericolului tocmai fiindca sunt
+		// spatii de nume interne: nicio metoda de extensie publica nu poate veni din ele.
+		static readonly string[] unavailableInternalNamespaces = {
+			// ContractUtils, TypeExtensions, TypeUtils - toate internal in System.Linq.Expressions.
+			"System.Dynamic.Utils",
+			// LightCompiler, LightDelegateCreator - interpretorul intern din spatele lui
+			// Expression.Compile(preferInterpretation), tot internal in System.Linq.Expressions.
+			"System.Linq.Expressions.Interpreter",
+		};
+
+		static bool IsUnavailableInternalNamespace(string ns)
+		{
+			for (int i = 0; i < unavailableInternalNamespaces.Length; i++) {
+				// Potrivire exacta, nu prefix: `System.Linq.Expressions` insusi e public si trebuie sa ramana.
+				if (string.Equals(unavailableInternalNamespaces[i], ns, StringComparison.Ordinal))
+					return true;
+			}
+			return false;
+		}
+
 		public void Run(AstNode compilationUnit)
 		{
 			// First determine all the namespaces that need to be imported:
@@ -76,6 +117,8 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 				var nses = GetNamespacesInReverseOrder();
 				for (int index = 0; index < nses.Count; index++) {
 					var ns = nses[index];
+					if (IsUnavailableInternalNamespace(ns.Namespace))
+						continue;
 					// we go backwards (OrderByDescending) through the list of namespaces because we insert them backwards
 					// (always inserting at the start of the list)
 					string[] parts = ns.Namespace.Split(namespaceSep);
