@@ -131,6 +131,10 @@ internal sealed class RecoveredCode
         var index = new Dictionary<string, MethodBase>(StringComparer.Ordinal);
         _indexes[assemblyName] = index;
 
+        // Cheile pe care au cazut doua metode diferite ALE ACESTUI assembly. Numai ale lui: indexul este
+        // per assembly, deci doua assembly-uri au voie sa foloseasca aceeasi cheie fara sa se incurce.
+        var collided = new HashSet<string>(StringComparer.Ordinal);
+
         var assembly = Load(assemblyName);
         if (assembly == null)
             return index;
@@ -184,13 +188,37 @@ internal sealed class RecoveredCode
                     continue;
                 }
 
-                // Prima castiga, exact ca la indexul jocului: o cheie dubla inseamna doua metode pe care
-                // nici partea cealalta nu le poate deosebi, deci alegerea ar fi o ghiceala.
-                if (!index.ContainsKey(key))
-                    index[key] = method;
+                // Cheia ciocnita se scoate din pereche, exact ca la indexul jocului: doua metode pe care
+                // cheia normalizata nu le mai deosebeste nu se pot compara cu nimic, fiindca nu se stie
+                // care dintre ele este cea masurata. Ignorand doar a doua venita, prima ar ramane in
+                // index si ar fi chemata drept pereche a celeilalte.
+                if (collided.Contains(key))
+                    continue;
+
+                if (index.TryGetValue(key, out var already))
+                {
+                    // Aceeasi metoda vazuta de doua ori nu este o ciocnire: reflectia are voie sa dea alt
+                    // obiect MethodInfo pentru acelasi membru.
+                    if (ReferenceEquals(already, method) || already.Equals(method))
+                        continue;
+
+                    index.Remove(key);
+                    collided.Add(key);
+                    continue;
+                }
+
+                index[key] = method;
             }
         }
 
+        Collisions += collided.Count;
         return index;
     }
+
+    /// <summary>
+    /// Cate chei recuperate au fost scoase din pereche fiindca doua metode diferite au cazut pe ele.
+    /// Se aduna peste toate assembly-urile indexate pana acum si se raporteaza dupa dump: daca numarul
+    /// creste dupa o schimbare de normalizare, normalizarea a devenit prea grosolana.
+    /// </summary>
+    public int Collisions { get; private set; }
 }

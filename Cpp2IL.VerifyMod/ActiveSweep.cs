@@ -233,10 +233,27 @@ internal static class ActiveSweep
         // o recompilare a codului recuperat.
         var redump = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_REDUMP") == "1";
 
-        if (redump || !File.Exists(dumpPath))
+        // Un dump vechi langa o normalizare noua este cel mai scump fel de a pierde o sesiune: cheile
+        // scrise in fisier nu mai sunt cheile pe care le da MethodKeys acum, deci FIECARE metoda din
+        // lista de lucru s-ar raporta ca "cheia a disparut din indexul jocului" si jocul ar fi pornit
+        // degeaba. Semnul de langa dump spune cu ce forma de cheie a fost scris; cand nu se potriveste,
+        // dump-ul se reface fara sa mai astepte cineva sa puna CPP2IL_ACTIVE_REDUMP=1.
+        var stampPath = dumpPath + ".keyver";
+        var stamped = File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : "";
+        var stale = File.Exists(dumpPath) && stamped != MethodKeys.FormatVersion;
+
+        if (stale)
+            _log("Dump-ul existent a fost scris cu alta forma de cheie (" + (stamped.Length > 0 ? stamped : "fara semn") + " != " + MethodKeys.FormatVersion + "); se reface.");
+
+        if (redump || stale || !File.Exists(dumpPath))
+        {
             WriteRequirements(dumpPath);
+            File.WriteAllText(stampPath, MethodKeys.FormatVersion);
+        }
         else
+        {
             _log("Dump-ul de cerinte exista deja (" + MethodRequirements.FileName + "); se refoloseste. CPP2IL_ACTIVE_REDUMP=1 il rescrie.");
+        }
 
         if (_dumpOnly)
         {
@@ -331,6 +348,15 @@ internal static class ActiveSweep
         }
 
         _log("Dump de cerinte: " + rows + " metode din " + assemblies + " assembly-uri -> " + MethodRequirements.FileName);
+
+        // Pretul normalizarii, scris langa castigul ei. Cheia se ingroasa dinadins ca sa ajunga la forma
+        // pe care o da Il2CppInterop, iar orice ingrosare poate face ca doua metode diferite sa cada pe
+        // aceeasi cheie. Acelea sunt scoase din pereche, si numarul lor trebuie sa se vada: daca sare, o
+        // regula de normalizare este prea larga si trebuie stramtata, nu lasata sa produca perechi
+        // gresite.
+        if (_recovered.Collisions > 0)
+            _log("Chei recuperate scoase din pereche (doua metode pe aceeasi cheie): " + _recovered.Collisions);
+
         foreach (var pair in byClass)
             _log("  assembly-uri " + pair.Key + ": " + pair.Value);
 

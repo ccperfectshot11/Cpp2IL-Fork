@@ -389,14 +389,30 @@ public static class MethodFuzzer
 // The identity a signature is filed under. It must be computable on both hosts and identical there, so
 // it is built from names and shapes only - never from a metadata token, which Cpp2IL and Il2CppInterop
 // hand out independently, and never from the assembly name, which Il2CppInterop prefixes with Il2Cpp.
+//
+// Cheia nu este numele niciuneia dintre parti, ci o FORMA CANONICA spre care converg amandoua. Fiecare
+// regula de mai jos este o ingrosare: trimite mai multe siruri vechi intr-unul nou si niciodata un sir
+// vechi in doua. De aici iese proprietatea care conteaza cand se umbla la normalizare - doua chei care
+// se potriveau inainte se potrivesc si dupa, deci NICIO pereche formata nu se poate pierde. Singurul
+// pret posibil sunt perechile GRESITE, cand doua metode diferite ajung pe aceeasi cheie; de aceea cele
+// doua indexuri (VerifyMod.IndexMember si RecoveredCode.Index) scot din pereche cheia ciocnita in loc
+// sa pastreze prima venita.
 public static class MethodKeys
 {
+    /// <summary>
+    /// Forma cheii, ca sa se vada din afara ca un fisier scris mai demult nu mai este citibil. Se schimba
+    /// ODATA CU orice regula de normalizare care muta cheile: cine tine chei pe disc - dump-ul de cerinte
+    /// al fazei 4, fisierele de semnaturi ale fazei 1 - le compara cu semnul asta si le reface, in loc sa
+    /// porneasca jocul degeaba peste chei care nu se mai potrivesc cu nimic.
+    /// </summary>
+    public const string FormatVersion = "w23-mangle-1";
+
     public static string For(MethodBase method)
     {
         var builder = new StringBuilder();
         builder.Append(Normalise(method.DeclaringType));
         builder.Append("::");
-        builder.Append(method.Name);
+        builder.Append(NormaliseMemberName(method.Name));
         builder.Append('(');
 
         // The receiver is an input, so it is named in the key like one. Without it a static and an
@@ -425,16 +441,146 @@ public static class MethodKeys
     }
 
     // Citit o singura data: Normalise sta pe drumul fierbinte al indexarii din faza 2, unde este chemat
-    // de cateva sute de mii de ori.
+    // de cateva sute de mii de ori. De aceea rezultatul se tine intr-un dictionar - aceleasi cateva zeci
+    // de tipuri (System.String, UnityEngine.Vector3, tipul declarant) revin la fiecare metoda.
     private static readonly bool StripGlobalNamespace =
         Environment.GetEnvironmentVariable("CPP2IL_VERIFY_IL2CPP_GLOBAL_NS") != "0";
+
+    private static readonly Dictionary<Type, string> Cache = new Dictionary<Type, string>();
+
+    // Namespace-ul in care Il2CppInterop isi tine invelisurile de tablou. Verificarea se face pe el, nu
+    // numai pe numele tipului, ca un tip AL JOCULUI numit din intamplare "Il2CppStructArray" sa nu fie
+    // citit drept tablou.
+    private const string InteropArrays = "Il2CppInterop.Runtime.InteropTypes.Arrays";
 
     private static string Normalise(Type type)
     {
         if (type == null)
             return "void";
 
-        var name = type.FullName ?? type.Name;
+        lock (Cache)
+        {
+            if (Cache.TryGetValue(type, out var cached))
+                return cached;
+        }
+
+        var builder = new StringBuilder();
+        Append(builder, type);
+        var name = builder.ToString();
+
+        lock (Cache)
+        {
+            Cache[type] = name;
+        }
+
+        return name;
+    }
+
+    private static void Append(StringBuilder builder, Type type)
+    {
+        if (type.IsByRef)
+        {
+            Append(builder, type.GetElementType());
+            builder.Append('&');
+            return;
+        }
+
+        if (type.IsPointer)
+        {
+            Append(builder, type.GetElementType());
+            builder.Append('*');
+            return;
+        }
+
+        if (type.IsArray)
+        {
+            Append(builder, type.GetElementType());
+            builder.Append('[');
+            builder.Append(',', type.GetArrayRank() - 1);
+            builder.Append(']');
+            return;
+        }
+
+        // Interopul nu are tablouri: un "byte[]" al jocului ajunge Il2CppStructArray<byte>, un "Foo[]"
+        // ajunge Il2CppReferenceArray<Foo>, iar un "string[]" ajunge Il2CppStringArray, care nici macar
+        // nu este generic. Aici este singurul loc unde DESFACEM ce a facut interopul in loc sa aplicam
+        // noi aceeasi stalcire, si asta fiindca aici desfacerea nu este ambigua: invelisul spune el
+        // insusi ce avea inauntru, iar namespace-ul spune ca este invelisul interopului si nu un tip al
+        // jocului.
+        var element = InteropArrayElement(type);
+        if (element != null)
+        {
+            Append(builder, element);
+            builder.Append("[]");
+            return;
+        }
+
+        // Un parametru generic nelegat (T) nu are FullName deloc, doar Name.
+        if (type.IsGenericParameter)
+        {
+            builder.Append(type.Name);
+            return;
+        }
+
+        // Type.FullName scrie instantierea generica CALIFICATA CU ASSEMBLY: la noi
+        // "List`1[[Foo, Assembly-CSharp, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null]]".
+        // Inauntrul parantezelor sta un nume de tip caruia nimeni nu ii taie prefixul Il2Cpp, fiindca
+        // taietura se uita numai la inceputul sirului. Reconstruim instantierea din bucati, ca fiecare
+        // argument sa treaca prin aceeasi normalizare ca un tip de nivel intai - si scapam pe drum de
+        // assembly, versiune, cultura si cheie publica, care nu spun nimic despre forma.
+        if (type.IsGenericType && !type.IsGenericTypeDefinition)
+        {
+            AppendName(builder, type.GetGenericTypeDefinition());
+            builder.Append('<');
+
+            var arguments = type.GetGenericArguments();
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                if (i > 0)
+                    builder.Append(',');
+
+                Append(builder, arguments[i]);
+            }
+
+            builder.Append('>');
+            return;
+        }
+
+        AppendName(builder, type);
+    }
+
+    private static Type InteropArrayElement(Type type)
+    {
+        if (!string.Equals(type.Namespace, InteropArrays, StringComparison.Ordinal))
+            return null;
+
+        if (string.Equals(type.Name, "Il2CppStringArray", StringComparison.Ordinal))
+            return typeof(string);
+
+        if (!type.IsGenericType || type.IsGenericTypeDefinition)
+            return null;
+
+        if (!string.Equals(type.Name, "Il2CppStructArray`1", StringComparison.Ordinal) &&
+            !string.Equals(type.Name, "Il2CppReferenceArray`1", StringComparison.Ordinal))
+            return null;
+
+        var arguments = type.GetGenericArguments();
+        return arguments.Length == 1 ? arguments[0] : null;
+    }
+
+    // Numele unui tip, pe bucati: intai lantul de tipuri declarante, apoi numele propriu. Se construieste
+    // asa si nu din FullName fiindca stalcirea trebuie sa cada pe FIECARE nume in parte - aplicata peste
+    // FullName intreg ar sterge si punctele care despart namespace-ul, si nu mai ramane nimic de potrivit.
+    private static void AppendName(StringBuilder builder, Type type)
+    {
+        var declaring = type.IsNested ? type.DeclaringType : null;
+        if (declaring != null)
+        {
+            AppendName(builder, declaring);
+            builder.Append('+');
+            builder.Append(Mangle(type.Name));
+            return;
+        }
 
         // Un tip FARA namespace in joc nu ajunge fara namespace in interop: Il2CppInterop il pune in
         // namespace-ul "Il2Cpp", deci SRMath vine ca "Il2Cpp.SRMath". Taind doar cele sase litere ramane
@@ -447,11 +593,53 @@ public static class MethodKeys
         // iar cu punctul taiat toate cele 1.761 de enum-uri recuperate se potrivesc pe nume cu ale
         // jocului, ceea ce confirma forma taieturii. Niciun tip recuperat nu incepe cu "Il2Cpp", deci
         // faza 1 nu se misca deloc.
+        var ns = type.Namespace ?? "";
+        var name = ns.Length > 0 ? ns + "." + Mangle(type.Name) : Mangle(type.Name);
+
         if (StripGlobalNamespace && name.StartsWith("Il2Cpp.", StringComparison.Ordinal))
             name = name.Substring("Il2Cpp.".Length);
         else if (name.StartsWith("Il2Cpp", StringComparison.Ordinal))
             name = name.Substring("Il2Cpp".Length);
 
-        return name;
+        builder.Append(name);
+    }
+
+    // Il2CppInterop scrie C#, deci nu poate pastra un nume care contine '<', '>' sau '.': le inlocuieste
+    // pe toate cu '_'. Citit din tabela de siruri a lui Assembly-CSharp.dll din Il2CppAssemblies, unde
+    // tipul "<Start>d__14" se cheama "_Start_d__14", "<>c__DisplayClass0_0" se cheama
+    // "__c__DisplayClass0_0", "<PrivateImplementationDetails>" se cheama "_PrivateImplementationDetails_",
+    // iar implementarea explicita de interfata "System.Collections.IEnumerator.Reset" se cheama
+    // "System_Collections_IEnumerator_Reset". Formele cu paranteze unghiulare SE VAD si ele in fisier,
+    // dar numai ca argument al atributului OriginalName, care pastreaza numele dinainte de redenumire -
+    // cine le cauta cu un grep peste DLL le gaseste si crede ca tipurile n-au fost redenumite.
+    //
+    // Stalcim NOI la fel in loc sa desfacem stalcirea lor, fiindca desfacerea ar fi o ghiceala: din
+    // "_A_b__1" nu se mai poate sti unde era '<'. Aplicarea, in schimb, este o functie. Pe partea
+    // jocului regula este oricum fara efect - acolo nu mai exista niciun '<', '>' sau '.' de inlocuit.
+    private static string Mangle(string name)
+    {
+        if (name == null)
+            return "";
+
+        if (name.IndexOf('<') < 0 && name.IndexOf('>') < 0 && name.IndexOf('.') < 0)
+            return name;
+
+        var characters = name.ToCharArray();
+        for (var i = 0; i < characters.Length; i++)
+            if (characters[i] == '<' || characters[i] == '>' || characters[i] == '.')
+                characters[i] = '_';
+
+        return new string(characters);
+    }
+
+    // Numele unei metode trece prin aceeasi stalcire, cu o singura scutire: ".ctor" si ".cctor" sunt
+    // nume pe care si reflectia jocului le da tot asa, deci n-au ce castiga din inlocuire si ar putea
+    // doar sa se ciocneasca cu o metoda chemata chiar "_ctor".
+    private static string NormaliseMemberName(string name)
+    {
+        if (name == ".ctor" || name == ".cctor")
+            return name;
+
+        return Mangle(name);
     }
 }

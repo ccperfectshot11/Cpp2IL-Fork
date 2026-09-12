@@ -356,6 +356,7 @@ public class VerifyMod : MelonMod
     {
         var index = new Dictionary<string, MethodBase>(StringComparer.Ordinal);
 
+        ResetCollisions();
         LoadEveryInteropAssembly();
 
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
@@ -385,6 +386,9 @@ public class VerifyMod : MelonMod
             foreach (var type in types)
                 IndexType(type, index);
         }
+
+        if (Collided.Count > 0)
+            LoggerInstance.Warning($"{Collided.Count} chei ale jocului au cazut pe cate doua metode diferite si au fost scoase din pereche.");
 
         return index;
     }
@@ -520,6 +524,15 @@ public class VerifyMod : MelonMod
             IndexMember(index, constructor);
     }
 
+    /// <summary>
+    /// Cheile pe care au cazut doua metode DIFERITE ale jocului. Se tin separat fiindca o cheie ciocnita
+    /// nu se repara ignorand a doua venita: prima a intrat deja in index si ar ramane acolo drept
+    /// pereche a ceva ce nu i se cuvine.
+    /// </summary>
+    private static readonly HashSet<string> Collided = new HashSet<string>(StringComparer.Ordinal);
+
+    private static void ResetCollisions() => Collided.Clear();
+
     private static void IndexMember(Dictionary<string, MethodBase> index, MethodBase method)
     {
         if (method.IsGenericMethodDefinition || method.ContainsGenericParameters)
@@ -535,9 +548,31 @@ public class VerifyMod : MelonMod
             return;
         }
 
-        // First one wins. A duplicate key means two methods Phase 1 could not tell apart either, so
-        // choosing between them here would be guessing which one Phase 1 measured.
-        if (!index.ContainsKey(key))
-            index[key] = method;
+        // Cheia ciocnita se SCOATE din pereche, nu se atribuie primei venite.
+        //
+        // Normalizarea este o ingrosare - '<', '>' si '.' devin toate '_', iar instantierile generice
+        // isi pierd assembly-ul si versiunea - deci doua metode care inainte aveau chei diferite pot
+        // ajunge acum pe aceeasi. "Prima castiga" ar alege atunci la intamplare care metoda a jocului
+        // este perechea, iar o pereche gresita este mai rea decat una lipsa: da fie un "nu se comporta
+        // la fel" mincinos, fie, mult mai rau, un "se comporta la fel" mincinos. O cheie lipsa se vede
+        // in dump ca "cheia nu exista in indexul jocului" si se poate numara; o pereche gresita nu se
+        // vede nicaieri.
+        if (Collided.Contains(key))
+            return;
+
+        if (index.TryGetValue(key, out var already))
+        {
+            // Aceeasi metoda vazuta de doua ori nu este o ciocnire. Reflectia are voie sa dea alt obiect
+            // MethodInfo pentru acelasi membru, deci intrebarea se pune si prin Equals, nu numai prin
+            // identitatea de referinta.
+            if (ReferenceEquals(already, method) || already.Equals(method))
+                return;
+
+            index.Remove(key);
+            Collided.Add(key);
+            return;
+        }
+
+        index[key] = method;
     }
 }
