@@ -47,6 +47,25 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 		CancellationToken cancellationToken;
 		readonly List<VariableToDeclare> variablesToDeclare = new List<VariableToDeclare>();
 
+		// Un local declarat fara initializator este singura sursa a lui CS0165 in exportul nostru: decompilatorul
+		// reda fluxul de control asa cum e in IL, unde nu exista dovada de atribuire sigura pe care C# o cere.
+		// Corpurile emise de Cpp2IL au fanionul `init` pus fara exceptie - IlGenerator.cs construieste fiecare
+		// corp cu `new CilMethodBody { InitializeLocals = true }`, nu conditionat - iar fanionul ala inseamna ca
+		// runtime-ul zeroeste toate localele inainte de intrarea in metoda. Deci `= default(T)` la declaratie nu
+		// adauga o valoare pe care programul original nu o avea, o scrie pe cea pe care o avea deja: face
+		// explicit exact ce facea `.locals init`.
+		// Nu presupunem asta, o citim: BodyInitialisesLocals ia fanionul de pe corpul care detine chiar
+		// declaratia, si daca nu e pus lasam CS0165 in picioare, fiindca acolo initializarea chiar ar ascunde o
+		// diferenta de comportament.
+		// Exista deja o reparatie pentru aceeasi problema la nivel de IL, CPP2IL_INIT_LOCALS, care emite
+		// `initobj` per local; costa ~22% iesire in plus si de aceea e oprita implicit. Asta face acelasi lucru
+		// in C#, fara sa atinga IL-ul. Cele doua nu se dubleaza: cand IL-ul contine `initobj`, decompilatorul
+		// scoate o atribuire `obj = default(object);` pe care TryConvertAssignmentExpressionIntoVariableDeclaration
+		// o promoveaza la declaratie, deci intrarea ajunge pe ramura ReplacedAssignment si nu trece pe aici.
+		// CPP2IL_DECL_DEFAULT=0 opreste initializarea, pentru masurarea A/B.
+		static readonly bool ZeroInitialiseDeclarations =
+			System.Environment.GetEnvironmentVariable("CPP2IL_DECL_DEFAULT") != "0";
+
 		public DeclareVariables(DecompilerContext context)
 		{
 			Reset(context);
@@ -72,7 +91,8 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 					var decl = new VariableDeclarationStatement(
 						v.ILVariable != null && v.ILVariable.IsParameter
 							? BoxedTextColor.Parameter
-							: BoxedTextColor.Local, (AstType)v.Type.Clone(), v.Name);
+							: BoxedTextColor.Local, (AstType)v.Type.Clone(), v.Name,
+						BuildZeroInitialiser(v));
 					if (v.ILVariable != null)
 						decl.Variables.Single().AddAnnotation(v.ILVariable);
 					block.Statements.InsertBefore(
@@ -121,6 +141,67 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 			}
 
 			variablesToDeclare.Clear();
+		}
+
+		/// <summary>
+		/// Da initializatorul `default(T)` pentru o declaratie care altfel ar ramane goala, sau null cand nu
+		/// avem voie sa o initializam. Se cheama numai pe ramura fara ReplacedAssignment, deci nu poate
+		/// suprascrie o initializare existenta.
+		/// </summary>
+		Expression BuildZeroInitialiser(VariableToDeclare v)
+		{
+			if (!ZeroInitialiseDeclarations)
+				return null;
+
+			// Un parametru e deja atribuit de apelant: `= default(T)` i-ar sterge valoarea primita, iar pe un
+			// `out` ar rupe si contractul metodei.
+			if (v.ILVariable != null && v.ILVariable.IsParameter)
+				return null;
+
+			AstType type = v.Type;
+			if (type == null || type.IsNull)
+				return null;
+
+			// Un byref nu are forma asta: `ref byte b = default(ref byte);` e invalid de doua ori. Exact tiparul
+			// acesta, emis la nivel de IL, e cel care a stricat 1.907 linii cand CPP2IL_INIT_LOCALS punea
+			// `initobj byte&` (vezi comentariul din IlGenerator.cs). Un byref nici nu are ce zero sa primeasca.
+			if ((v.Modifiers & Modifiers.Ref) != 0)
+				return null;
+			if (type is ComposedType composed && composed.HasRefSpecifier)
+				return null;
+
+			// `var` ajunge aici cand tipul localului contine un tip anonim: AstMethodBodyBuilder pune atunci
+			// SimpleType("var") in locul conversiei de tip. `default(var)` nu exista.
+			if (type is SimpleType simple && simple.Identifier == "var" && simple.TypeArguments.Count == 0)
+				return null;
+
+			if (!BodyInitialisesLocals(v.InsertionPoint))
+				return null;
+
+			// Clona e obligatorie: un nod NRefactory are un singur parinte, iar `type` e deja legat de
+			// declaratie prin cealalta clona de mai sus.
+			return new DefaultValueExpression((AstType)type.Clone());
+		}
+
+		/// <summary>
+		/// Spune daca metoda care contine nodul dat are `.locals init`, adica daca runtime-ul chiar zeroeste
+		/// localele inainte de intrarea in corp.
+		/// </summary>
+		static bool BodyInitialisesLocals(AstNode node)
+		{
+			// Prima adnotare MethodDef urcand in arbore este chiar metoda care detine blocul: AstBuilder pune
+			// MethodDef pe MethodDeclaration, ConstructorDeclaration si Accessor, iar DelegateConstruction il
+			// pune pe AnonymousMethodExpression - deci un lambda inlinuit e judecat dupa fanionul lui, nu dupa
+			// al metodei care il inconjoara.
+			for (AstNode current = node; current != null; current = current.Parent) {
+				MethodDef owner = current.Annotation<MethodDef>();
+				if (owner != null)
+					return owner.Body == null || owner.Body.InitLocals;
+			}
+
+			// Fara proprietar nu putem sti, si atunci nu initializam: un CS0165 ramas este o eroare onesta, o
+			// initializare pusa pe nestiute ar fi o diferenta de comportament tacuta.
+			return false;
 		}
 
 		void Run(AstNode node, DefiniteAssignmentAnalysis daa)
