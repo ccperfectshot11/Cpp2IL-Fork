@@ -471,6 +471,72 @@ namespace ICSharpCode.Decompiler.Ast {
 		IMDTokenProvider Create_SystemType_get_TypeHandle_result;
 		bool Create_SystemType_get_TypeHandle_initd;
 
+		// Perechea publica a campului privat System.RuntimeTypeHandle::value. Spre deosebire de cele doua
+		// de mai sus, memoria e legata de modul, nu de un bool: constructorul de MemberRef primeste
+		// methodDef.Module, iar constructorul de AstMethodBodyBuilder se ia dintr-un bazin reutilizat, pe
+		// care Reset() nu il curata. Atata timp cat un DecompilerContext tine un singur modul, diferenta
+		// nu se vede, dar un MemberRef legat de alt modul e metadata gresita, nu doar o eticheta gresita.
+		IMDTokenProvider Create_RuntimeTypeHandle_get_Value()
+		{
+			if (Create_RuntimeTypeHandle_get_Value_module == methodDef.Module)
+				return Create_RuntimeTypeHandle_get_Value_result;
+			Create_RuntimeTypeHandle_get_Value_module = methodDef.Module;
+
+			const string propName = "Value";
+			var type = corLib.GetTypeRef("System", "RuntimeTypeHandle");
+			var retType = corLib.IntPtr;
+			var mr = new MemberRefUser(methodDef.Module, "get_" + propName, MethodSig.CreateInstance(retType), type);
+			Create_RuntimeTypeHandle_get_Value_result = mr;
+			var md = mr.ResolveMethod();
+			if (md == null || md.DeclaringType == null)
+				return mr;
+			var prop = md.DeclaringType.FindProperty(propName);
+			if (prop == null)
+				return mr;
+
+			Create_RuntimeTypeHandle_get_Value_result = prop;
+			return prop;
+		}
+		IMDTokenProvider Create_RuntimeTypeHandle_get_Value_result;
+		ModuleDef Create_RuntimeTypeHandle_get_Value_module;
+
+		// il2cpp inline-eaza getterul System.RuntimeTypeHandle::get_Value, asa ca in codul recuperat ramane
+		// citirea directa a campului privat `value`. Cand exportul se recompileaza peste biblioteca standard
+		// reala, campul nu e vizibil si Roslyn da CS1061.
+		//
+		// Echivalenta nu e o aproximare: proprietatea publica Value e declarata in aceeasi structura, are
+		// exact acelasi tip (System.IntPtr), iar getterul ei nu face altceva decat sa intoarca acest camp.
+		// De aceea verificam si tipul campului - daca nu e IntPtr, nu e structura pe care o cunoastem si
+		// lasam lucrurile asa cum sunt.
+		//
+		// Se muta NUMAI citirea. Value nu are setter, deci Stfld ramane neatins, si nu se poate lua adresa
+		// unei proprietati, deci nici Ldflda. O scriere sau o luare de adresa nu are corespondent public, iar
+		// o inventie acolo ar preschimba o eroare de compilare, care se vede, intr-o diferenta de
+		// comportament, care nu se vede.
+		bool IsRuntimeTypeHandleValueField(IField field)
+		{
+			if (field == null || field.Name != "value")
+				return false;
+
+			var declaring = field.DeclaringType;
+			if (declaring == null || declaring.Name != "RuntimeTypeHandle" || declaring.FullName != "System.RuntimeTypeHandle")
+				return false;
+
+			return field.FieldSig?.Type?.FullName == "System.IntPtr";
+		}
+
+		// Corpul lui get_Value este chiar `return this.value;`. Daca l-am rescrie si pe acela, getterul s-ar
+		// chema pe sine si ar da recursivitate infinita - o eroare de compilare schimbata intr-un
+		// StackOverflow la rulare. In lantul de fata se decompileaza doar ansamblurile jocului, nu si corlib-ul
+		// recuperat, deci cazul nu apare azi; garda exista ca sa nu depinda corectitudinea de asta.
+		bool CurrentMethodIsRuntimeTypeHandleGetValue()
+		{
+			return methodDef != null
+				&& methodDef.Name == "get_Value"
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == "System.RuntimeTypeHandle";
+		}
+
 		object GetParameterColor(ILVariable ilv)
 		{
 			if (valueParameterIsKeyword && ilv.OriginalParameter?.Name == "value" && methodDef.Parameters.Count > 0 && methodDef.Parameters[methodDef.Parameters.Count - 1] == ilv.OriginalParameter)
@@ -869,6 +935,8 @@ namespace ICSharpCode.Decompiler.Ast {
 				case ILCode.Ldfld:
 					if (arg1 is DirectionExpression)
 						arg1 = ((DirectionExpression)arg1).Expression.Detach();
+					if (IsRuntimeTypeHandleValueField(operand as IField) && !CurrentMethodIsRuntimeTypeHandleGetValue())
+						return arg1.Member("Value", BoxedTextColor.InstanceProperty).WithAnnotation(Create_RuntimeTypeHandle_get_Value());
 					return arg1.Member(((IField) operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Ldsfld:
 					return AstBuilder.ConvertType(((IField)operand).DeclaringType, stringBuilder)
