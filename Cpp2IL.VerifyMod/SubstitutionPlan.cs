@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Cpp2IL.VerifyCore;
@@ -74,7 +74,7 @@ internal static class SubstSafety
         "Photon3Unity3D", "PhotonRealtime", "LiteNetLib", "SuperSocket.ClientEngine", "PusherClient",
         "WebSocketDotNet", "MessagePack", "Mono.Security",
         // cont, magazin, atribuire, telemetrie, antifrauda
-        "Scopely.", "Playgami.", "BackboneUnity", "Firebase.", "Facebook.Unity", "GooglePlayGames",
+        "BackboneUnity", "Firebase.", "Facebook.Unity", "GooglePlayGames",
         "AppleAuth", "com.rlabrecque.steamworks.net", "BugsnagUnity",
     };
 
@@ -118,6 +118,10 @@ internal static class SubstSafety
     private static readonly string[] NeverSubstitute =
     {
         "quantum.code", "quantum.core", "PhotonDeterministic",
+        // Cerute explicit de utilizator: Playgami este meniul principal, iar fara el nu se pot reconstrui
+        // meniurile. Se observa la ambele trepte, dar raspunsul lor nu se scrie niciodata inapoi - asa
+        // masuram fara ca vreun cont sau vreo plata sa ajunga sa depinda de codul recuperat.
+        "Scopely.", "Playgami.", "Tag.SwapShop",
     };
 
     /// <summary>
@@ -190,6 +194,15 @@ internal static class SubstPlanner
     /// fuzzing-ul. Nu o copie: doua idei despre ce inseamna o valoare primitiva ar duce la metode alese
     /// aici si refuzate la rulare, exact capcana de care se fereste si Selector.IsSafeValue.
     /// </summary>
+    /// <summary>
+    /// Tipurile de retur pentru care exista un postfix cu `ref T __result` in <c>SubstitutionHarness</c>.
+    /// Restul ar trece prin varianta cu `object __result`, care s-a dovedit ca omoara procesul.
+    /// </summary>
+    private static bool HasTypedPostfix(Type t) =>
+        t == typeof(bool) || t == typeof(char) || t == typeof(sbyte) || t == typeof(byte)
+        || t == typeof(short) || t == typeof(ushort) || t == typeof(int) || t == typeof(uint)
+        || t == typeof(long) || t == typeof(ulong) || t == typeof(float) || t == typeof(double);
+
     public static SubstTier? Classify(MethodBase method)
     {
         if (method.IsGenericMethodDefinition || method.ContainsGenericParameters || method.IsAbstract)
@@ -208,6 +221,15 @@ internal static class SubstPlanner
         // tine loc de raspuns aici, fiindca receptorul nostru este o COPIE - jocul nu vede scrisul nostru
         // si noi nu vedem scrisul lui.
         if (info.ReturnType == typeof(void) || ValueShape.For(info.ReturnType) == null)
+            return null;
+
+        // Numai tipurile pentru care exista un postfix TIPIZAT, cu `ref T __result`. Varianta cu
+        // `object __result` prin valoare, folosita pentru structuri si enum-uri, a omorat procesul pe
+        // prima metoda incercata: AnimatedButtonCooldownHelper::get_EndTime intoarce un DateTime, iar
+        // HarmonyX nu impacheteaza valoarea intr-un object acolo, deci postfixul citeste altceva decat
+        // o valoare valabila. CPP2IL_SUBST_ANYRET=1 le lasa sa treaca din nou, pentru cine vrea sa reia
+        // incercarea dupa ce repara impachetarea.
+        if (Environment.GetEnvironmentVariable("CPP2IL_SUBST_ANYRET") != "1" && !HasTypedPostfix(info.ReturnType))
             return null;
 
         foreach (var parameter in info.GetParameters())
@@ -249,6 +271,7 @@ internal static class SubstPlanner
                 Bump(drops, "treapta oprita din configurare");
                 continue;
             }
+
 
             var typeName = pair.Value.DeclaringType?.FullName ?? "";
             if (SubstSafety.IsStubbedModule(assemblyName))

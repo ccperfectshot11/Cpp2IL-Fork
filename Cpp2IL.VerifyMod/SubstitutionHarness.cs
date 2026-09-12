@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -66,7 +66,7 @@ internal static class SubstitutionHarness
 
     private static Action<string> _log = _ => { };
     private static string _directory = ".";
-    private static Harmony _harmony;
+    private static HarmonyLib.Harmony _harmony;
     private static RecoveredCode _recovered;
     private static Func<Dictionary<string, MethodBase>> _gameIndexFactory;
     private static Dictionary<string, MethodBase> _gameIndex;
@@ -111,7 +111,7 @@ internal static class SubstitutionHarness
     /// </summary>
     public static bool Requested => Environment.GetEnvironmentVariable("CPP2IL_SUBST") == "1";
 
-    public static bool Configure(string directory, Harmony harmony, Action<string> log, Func<Dictionary<string, MethodBase>> gameIndexFactory)
+    public static bool Configure(string directory, HarmonyLib.Harmony harmony, Action<string> log, Func<Dictionary<string, MethodBase>> gameIndexFactory)
     {
         _enabled = Requested;
         if (!_enabled)

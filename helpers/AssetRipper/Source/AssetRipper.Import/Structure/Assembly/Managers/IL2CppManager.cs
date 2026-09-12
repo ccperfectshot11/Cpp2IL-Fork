@@ -1,4 +1,4 @@
-using AsmResolver.DotNet;
+﻿using AsmResolver.DotNet;
 using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
 using AssetRipper.Import.Structure.Platforms;
@@ -40,9 +40,23 @@ public sealed class IL2CppManager : BaseManager
 
 	public static AsmResolverDllOutputFormatDefault DefaultOutputFormat { get; } = new();
 
-	public static List<Cpp2IlProcessingLayer>? RecoveryProcessingLayers { get; set; }
+	/// <summary>
+	/// Straturile folosite la ScriptContentLevel.Level3. Erau null, iar cand sunt null Level3 cade inapoi
+	/// pe DefaultProcessingLayers - adica exact ce face Level2. Masurat pe acest joc: cele doua niveluri
+	/// produceau proiecte identice, 2.671 de scripturi cu 74,6% din corpuri scrise `return default(...)`.
+	/// </summary>
+	public static List<Cpp2IlProcessingLayer>? RecoveryProcessingLayers { get; set; } =
+	[
+		new AttributeInjectorProcessingLayer(),
+		new StableRenamingProcessingLayer(),
+		new AttributeAnalysisProcessingLayer(),
+		new MethodOverrideNameFixer(),
+	];
 
-	public static AsmResolverDllOutputFormat? RecoveryOutputFormat { get; set; }
+	/// <summary>
+	/// Formatul care chiar scrie IL-ul recuperat in corpuri. Fara el, Level3 nu inseamna nimic.
+	/// </summary>
+	public static AsmResolverDllOutputFormat? RecoveryOutputFormat { get; set; } = new AsmResolverDllOutputFormatIlRecovery();
 
 	public static event Action? ClearStaticState;
 

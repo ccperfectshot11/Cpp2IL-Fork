@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -93,6 +93,23 @@ internal static class ReceiverTransfer
 
     private static void CopyOne(object gameReceiver, Type gameType, object target, FieldInfo field, TransferReport report)
     {
+        // Verificarea vine INAINTEA citirii, si asta nu e o optimizare.
+        //
+        // Un camp de tip referinta nu se poate transfera oricum - tipul recuperat si cel din interop sunt
+        // tipuri diferite pentru runtime - deci Coerce l-ar refuza cateva linii mai jos. Dar pana acolo
+        // apucam sa-l CITIM, iar citirea trece prin getterul de interop, care face Il2CppObjectPool.Get pe
+        // pointerul nativ. Cand pointerul ala e nul sau invalid, il2cpp_object_get_class calca pe memorie
+        // protejata si procesul moare - nu arunca, moare, deci niciun try nu-l prinde.
+        //
+        // S-a intamplat la BackendBattlePass::get_HasPurchased: transferul a citit _FreePassRewards, un
+        // camp de referinta neinitializat in acel moment, si a luat tot jocul cu el.
+        if (!field.FieldType.IsValueType && field.FieldType != typeof(string))
+        {
+            report.SkippedReference++;
+            report.Note("referinta, nu se citeste " + field.Name + " (" + field.FieldType.Name + ")");
+            return;
+        }
+
         if (!TryRead(gameReceiver, gameType, field.Name, out var raw))
         {
             report.NotFound++;

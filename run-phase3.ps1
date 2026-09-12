@@ -1,4 +1,4 @@
-# Faza 3: codul recuperat rulat pe starea REALA a jocului, la punctele reale de apel.
+﻿# Faza 3: codul recuperat rulat pe starea REALA a jocului, la punctele reale de apel.
 #
 # Fata de faza 2, care cheama metodele jocului cu argumente fabricate si compara doua hash-uri, aici se
 # pune un carlig Harmony pe metoda reala, se asteapta ca JOCUL sa o cheme singur, si abia atunci se
@@ -29,7 +29,8 @@ param(
     [string]$Mode = "plan",
     [string]$Game = "C:\Users\Helper\Desktop\StumblePeak",
     [string]$Dlls = "C:\Users\Helper\Desktop\Cpp2IL-Fork\out_w13on",
-    [string]$Filter = "Assembly-CSharp",
+    [string]$Backend = "https://stumblepeakbackend-9b06.onbelmo.uk",
+    [string]$Filter = "Assembly-CSharp,__Generated,quantum.code,quantum.core,Stumble.,Scopely.,Playgami.,Tag.SwapShop,PhotonDeterministic",
     [string]$Tier = "01",
     [int]$Batch = 1,
     [int]$Samples = 64,
@@ -76,6 +77,8 @@ if ($Fresh) {
 }
 
 $env:CPP2IL_SUBST = "1"
+# Backend local: fara el jocul se opreste la login si niciun carlig de meniu nu se declanseaza.
+if ($Backend) { $env:CPP2IL_BACKEND = $Backend }
 $env:CPP2IL_SUBST_DLLS = $Dlls
 $env:CPP2IL_SUBST_FILTER = $Filter
 $env:CPP2IL_SUBST_TIER = $Tier

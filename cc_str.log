@@ -1,0 +1,265 @@
+[1/150] Rewired_Core                             (228 MB, 71s)
+[2/150] quantum.code                             (267 MB, 273s)
+[3/150] Assembly-CSharp                          (49 MB, 276s)
+[4/150] Newtonsoft.Json                          (312 MB, 301s)
+[5/150] Cinemachine                              (402 MB, 456s)
+[6/150] Microsoft.CSharp                         (468 MB, 556s)
+[7/150] ShapesRuntime                            (129 MB, 604s)
+[8/150] Rewired_Windows                          (133 MB, 664s)
+[9/150] ASPlugins.Dreamteck.Splines              (245 MB, 677s)
+[10/150] BackboneUnity                            (286 MB, 683s)
+[11/150] mscorlib                                 (188 MB, 687s)
+[12/150] Playgami.Sdk.Identity.Runtime            (196 MB, 687s)
+[13/150] Scopely.Sdk.Ads.Runtime                  (241 MB, 693s)
+[14/150] Antlr4.Runtime.Standard                  (137 MB, 699s)
+[15/150] Photon3Unity3D                           (141 MB, 704s)
+[16/150] quantum.core                             (329 MB, 733s)
+[17/150] MessagePack                              (384 MB, 750s)
+[18/150] Scopely.Sdk.Core.Runtime                 (400 MB, 753s)
+[19/150] Mono.Security                            (439 MB, 762s)
+[20/150] Facebook.Unity                           (452 MB, 765s)
+[21/150] BugsnagUnity.Windows                     (461 MB, 767s)
+[22/150] UnityEngine.CoreModule                   (465 MB, 769s)
+[23/150] System                                   (480 MB, 772s)
+[24/150] PhotonDeterministic                      (64 MB, 774s)
+[25/150] System.Xml                               (42 MB, 775s)
+[26/150] UnityEngine.UIElementsModule             (53 MB, 792s)
+[27/150] PhotonRealtime                           (40 MB, 807s)
+[28/150] PusherClient                             (40 MB, 816s)
+[29/150] StompyRobot.SRF                          (42 MB, 830s)
+[30/150] Scopely.Sdk.Analytics.Runtime            (38 MB, 837s)
+[31/150] Playgami.Scout                           (42 MB, 851s)
+[32/150] Scopely.Sdk.Messaging.Runtime            (41 MB, 855s)
+[33/150] WebSocket4Net                            (51 MB, 859s)
+[34/150] System.Core                              (43 MB, 859s)
+[35/150] LiteNetLib                               (46 MB, 862s)
+[36/150] ASPlugins.Dreamteck.Utilities            (40 MB, 862s)
+[37/150] System.Data                              (61 MB, 864s)
+[38/150] Playgami.Sdk.Bugsnag.Runtime             (41 MB, 865s)
+[39/150] AraTrail                                 (36 MB, 865s)
+[40/150] Coffee.UIParticle                        (70 MB, 866s)
+[41/150] Scopely.Sdk.RuleEngine.Runtime           (58 MB, 867s)
+[42/150] Unity.TextMeshPro                        (67 MB, 868s)
+[43/150] UnityEngine.UI                           (78 MB, 868s)
+[44/150] EnhancedScroller                         (98 MB, 869s)
+[45/150] Playgami.Sdk.ErrorReporter.Runtime       (117 MB, 870s)
+[46/150] UnityFx.Outline                          (132 MB, 870s)
+[47/150] Scopely.Sdk.Canvas.Runtime               (147 MB, 871s)
+[48/150] NaCl                                     (177 MB, 873s)
+[49/150] com.rlabrecque.steamworks.net            (193 MB, 874s)
+[50/150] Scopely.Sdk.Attribution.Appsflyer.Runtime (207 MB, 875s)
+[51/150] SuperSocket.ClientEngine                 (219 MB, 876s)
+[52/150] Playgami.Sdk.Datadog.Runtime             (230 MB, 876s)
+[53/150] Stumble.Core                             (240 MB, 877s)
+[54/150] Firebase.Platform                        (252 MB, 877s)
+[55/150] Playgami.Sdk.HelpshiftX.Runtime          (262 MB, 878s)
+[56/150] Firebase.App                             (272 MB, 879s)
+[57/150] UnityEngine                              (274 MB, 879s)
+[58/150] Scopely.Sdk.Notification.Runtime         (283 MB, 880s)
+[59/150] UnityEngine.AnimationModule              (289 MB, 880s)
+[60/150] Unity.ResourceManager                    (296 MB, 881s)
+[61/150] AssetManagement.Downloading              (303 MB, 882s)
+[62/150] Unity.Addressables                       (308 MB, 882s)
+[63/150] Scopely.Sdk.FrequencyCapping.Runtime     (317 MB, 883s)
+[64/150] UnityEngine.IMGUIModule                  (327 MB, 883s)
+[65/150] GooglePlayGames                          (334 MB, 884s)
+[66/150] UnityEngine.TextCoreTextEngineModule     (334 MB, 884s)
+[67/150] Scopely.Sdk.Pusher.Native.Runtime        (340 MB, 885s)
+[68/150] Unity.Timeline                           (345 MB, 885s)
+[69/150] UnityEngine.ParticleSystemModule         (349 MB, 886s)
+[70/150] Scopely.Sdk.Assets.Runtime               (353 MB, 886s)
+[71/150] System.Net.Http                          (359 MB, 887s)
+[72/150] Photon.PhotonLibs                        (366 MB, 888s)
+[73/150] Unity.ProBuilder                         (368 MB, 888s)
+[74/150] Firebase.Analytics                       (372 MB, 889s)
+[75/150] Stumble.Lifecycle                        (381 MB, 889s)
+[76/150] Scopely.Sdk.Attribution.Runtime          (382 MB, 890s)
+[77/150] KTK_Laser_Effects_Volume1                (387 MB, 890s)
+[78/150] UnityEngine.UIElementsNativeModule       (389 MB, 891s)
+[79/150] AppleAuth                                (393 MB, 891s)
+[80/150] Unity.Services.Core.Internal             (395 MB, 892s)
+[81/150] Stumble.Services                         (398 MB, 892s)
+[82/150] Facebook.Unity.Settings                  (403 MB, 893s)
+[83/150] Playgami.Sdk.CustomerSupport.Runtime     (405 MB, 893s)
+[84/150] UnityEngine.AudioModule                  (407 MB, 894s)
+[85/150] UnityEngine.Purchasing.Stores            (410 MB, 894s)
+[86/150] UnityEngine.Purchasing                   (412 MB, 895s)
+[87/150] System.Xml.Linq                          (415 MB, 895s)
+[88/150] Purchasing.Common                        (419 MB, 896s)
+[89/150] UnityEngine.AndroidJNIModule             (421 MB, 896s)
+[90/150] UnityEngine.PhysicsModule                (423 MB, 897s)
+[91/150] UnityEngine.TextCoreFontEngineModule     (425 MB, 897s)
+[92/150] Coffee.UnmaskForUGUI                     (429 MB, 898s)
+[93/150] System.Numerics                          (431 MB, 898s)
+[94/150] UnityEngine.UIModule                     (432 MB, 899s)
+[95/150] NaughtyAttributes.Core                   (435 MB, 899s)
+[96/150] UnityEngine.UnityWebRequestModule        (437 MB, 900s)
+[97/150] Playgami.Sdk.AdsIronsource.Runtime       (439 MB, 900s)
+[98/150] Scopely.Sdk.Pusher.Common                (442 MB, 900s)
+[99/150] Tag.SwapShop.SparseArray.Runtime         (444 MB, 901s)
+[100/150] Unity.Services.Core.Telemetry            (447 MB, 902s)
+[101/150] NativeShare.Runtime                      (449 MB, 902s)
+[102/150] Gimmebreak.Backbone                      (451 MB, 903s)
+[103/150] Scopely.Sdk.Firebase.Runtime             (454 MB, 903s)
+[104/150] UnityEngine.Physics2DModule              (455 MB, 904s)
+[105/150] UnityEngine.XRModule                     (457 MB, 904s)
+[106/150] AssetManagement.Utils                    (460 MB, 905s)
+[107/150] UnityEngine.SharedInternalsModule        (461 MB, 905s)
+[108/150] Unity.Services.Core.Registration         (462 MB, 906s)
+[109/150] UnityEngine.InputLegacyModule            (463 MB, 906s)
+[110/150] UnityEngine.TextRenderingModule          (464 MB, 907s)
+[111/150] UnityEngine.TerrainModule                (465 MB, 907s)
+[112/150] UnityEngine.TilemapModule                (466 MB, 907s)
+[113/150] SafeArea                                 (468 MB, 908s)
+[114/150] Unity.Polybrush                          (469 MB, 908s)
+[115/150] UnityEngine.VFXModule                    (470 MB, 909s)
+[116/150] UnityEngine.VideoModule                  (471 MB, 909s)
+[117/150] Unity.Services.Core.Configuration        (472 MB, 910s)
+[118/150] UnityEngine.AssetBundleModule            (473 MB, 910s)
+[119/150] SafeAreaDemo                             (474 MB, 911s)
+[120/150] Unity.Services.Core                      (475 MB, 911s)
+[121/150] Unity.Services.Core.Scheduler            (476 MB, 912s)
+[122/150] UnityEngine.SubsystemsModule             (480 MB, 913s)
+[123/150] Tag.SwapShop.Result.Runtime              (482 MB, 913s)
+[124/150] Unity.Mathematics                        (483 MB, 914s)
+[125/150] UnityEngine.UnityAnalyticsModule         (483 MB, 915s)
+[126/150] System.Configuration                     (484 MB, 915s)
+[127/150] UnityEngine.UnityWebRequestAssetBundleModule (484 MB, 917s)
+[128/150] BalasoSoftware.Runtime                   (485 MB, 918s)
+[129/150] MessagePack.Annotations                  (486 MB, 925s)
+[130/150] Playgami.Sdk.Swizzler.Runtime            (495 MB, 928s)
+[131/150] Rewired_Windows_Functions                (497 MB, 938s)
+[132/150] System.Runtime.Serialization             (498 MB, 945s)
+[133/150] UnityEngine.DirectorModule               (500 MB, 951s)
+[134/150] UnityEngine.InputModule                  (501 MB, 958s)
+[135/150] UnityEngine.UnityWebRequestTextureModule (502 MB, 964s)
+[136/150] Scopely.Sdk.MsgPack.Runtime              (514 MB, 978s)
+[137/150] Unity.Services.Core.Device               (509 MB, 989s)
+[138/150] UnityEngine.AIModule                     (512 MB, 999s)
+[139/150] UnityEngine.GridModule                   (515 MB, 1000s)
+[140/150] UnityEngine.ImageConversionModule        (514 MB, 1001s)
+[141/150] UnityEngine.JSONSerializeModule          (515 MB, 1002s)
+[142/150] UnityEngine.VRModule                     (516 MB, 1004s)
+[143/150] __Generated                              (517 MB, 1005s)
+[144/150] System.Runtime.CompilerServices.Unsafe_2021PlaygamiMsgPack (520 MB, 1006s)
+[145/150] Unity.Services.Core.Environments.Internal (522 MB, 1007s)
+[146/150] Unity.Services.Core.Threading            (525 MB, 1007s)
+[147/150] UnityEngine.SpriteShapeModule            (526 MB, 1009s)
+[148/150] Assembly-CSharp-firstpass                (526 MB, 1009s)
+[149/150] PhotonWebSocket                          (526 MB, 1010s)
+[150/150] Scopely.Sdk.RemoteConfig.Runtime         (35 MB, 1366s)
+
+================ LEVEL 3: DECOMPILE -> RECOMPILE (NetSpy + Roslyn) ================
+DLLs                       : 150   (workers=2)
+  assemblies decompile err : 0
+
+-- Faithfulness (artifacts, per type) --
+Types decompiled           : 13,709
+  decompiler CRASHED        : 1  (0.0%)
+  has NativeMethod_0x*      : 0  (0.0%)
+  has NoteDecompilerIssue   : 4,631  (33.8%)
+  has goto                  : 2,302  (16.8%)
+  CLEAN (none of the above) : 9,002  (65.7%)
+
+-- Recompilation (Roslyn, per method) --
+Methods (all)              : 109,795
+  LENIENT (no error in own span)      : 61,331  (55.9%)
+  STRICT  (own clean AND type compiles): 44,377  (40.4%)   <== THE HONEST NUMBER
+  in a structurally-broken type       : 30,138  (27.4%)
+MARKER-FREE methods        : 84,657
+  LENIENT : 57,318  (67.7%)
+  STRICT  : 41,082  (48.5%)   <== marker-free that truly recompile
+class-level errors (count) : 9,040
+
+-- ? RECOVERY PER FIX: methods that become STRICT-compilable if ONLY this cause is fixed ? --
+  CS0122   +  7,887 strict methods   e.g. 'Buffer<TElement>' is inaccessible due to its protection level
+  CS1061   +  4,878 strict methods   e.g. 'Action<ICredential>' does not contain a definition for '_ctor' and no accessible extension method '_ctor' accepting a first argument of typ
+  CS0019   +  4,564 strict methods   e.g. Operator '+' cannot be applied to operands of type '__f__AnonymousType0<_Id_j__TPar, _Username_j__TPar, _Country_j__TPar, _Region_j__TPar, _
+  CS0029   +  1,617 strict methods   e.g. Cannot implicitly convert type 'System.IntPtr' to 'System.Exception'
+  CS1503   +  1,588 strict methods   e.g. Argument 2: cannot convert from 'int' to 'AppleAuth.Enums.PersonNameFormatterStyle'
+  CS0266   +  1,561 strict methods   e.g. Cannot implicitly convert type 'System.Collections.Generic.IEnumerable<Quantum.Prototypes.CycleState_Prototype>' to 'System.Exception'. An e
+  CS0246   +  1,414 strict methods   e.g. The type or namespace name 'MethodImplAttribute' could not be found (are you missing a using directive or an assembly reference?)
+  CS0616   +  1,238 strict methods   e.g. 'Nullable' is not an attribute class
+  CS0117   +  1,130 strict methods   e.g. 'string' does not contain a definition for 'JoinCore'
+  CS0104   +  1,071 strict methods   e.g. 'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'
+  CS0617   +    533 strict methods   e.g. 'menuName' is not a valid named attribute argument. Named attribute arguments must be fields which are not readonly, static, or const, or re
+  CS0161   +    278 strict methods   e.g. 'QuantumUnityMemoryLayoutVerifierPlatform.SizeOf(Type)': not all code paths return a value
+  CS0535   +    260 strict methods   e.g. 'GameEventsService' does not implement interface member 'IGameEventsService.GetLeaderboardScorePerRound(GameEvent, int)'
+  CS0274   +    224 strict methods   e.g. Cannot specify accessibility modifiers for both accessors of the property or indexer 'EventDisplayInfoBasePopup.PlaySoloEvent'
+  CS0534   +    177 strict methods   e.g. 'ControllerTemplate.ZLOgUXjjWrIpfPEbmgeGsxJWJjEy' does not implement inherited abstract member 'ControllerTemplate.gwBXOpXdcaPCdFtopfeMjzVrG
+  CS0079   +    167 strict methods   e.g. The event 'EntityViewUpdater.OnEntityInstantiated' can only appear on the left hand side of += or -=
+  CS1715   +    166 strict methods   e.g. 'Type.DeclaringType': type must be 'Type' to match overridden member 'MemberInfo.DeclaringType'
+  CS1615   +    154 strict methods   e.g. Argument 1 may not be passed with the 'ref' keyword
+  CS0619   +    154 strict methods   e.g. 'Span<char>' is obsolete: 'Types with embedded references are not supported in this version of your compiler.'
+  CS0426   +    147 strict methods   e.g. The type name '__c__DisplayClass14_0' does not exist in the type 'MainMenu'
+
+-- top causes by METHODS AFFECTED (upper bound: how many methods each cause touches) --
+  CS0019   methods=  23,323  errs= 134,878  e.g. Operator '+' cannot be applied to operands of type '__f__AnonymousType0<_Id_j__TPar, _Username_j__TPar, _Country_j__TPar, _Region_j__TPar, _
+  CS1061   methods=  16,624  errs=  50,703  e.g. 'Action<ICredential>' does not contain a definition for '_ctor' and no accessible extension method '_ctor' accepting a first argument of typ
+  CS0029   methods=  15,432  errs=  35,774  e.g. Cannot implicitly convert type 'System.IntPtr' to 'System.Exception'
+  CS0122   methods=  10,678  errs=  40,088  e.g. 'Buffer<TElement>' is inaccessible due to its protection level
+  CS0266   methods=   7,474  errs=  15,523  e.g. Cannot implicitly convert type 'System.Collections.Generic.IEnumerable<Quantum.Prototypes.CycleState_Prototype>' to 'System.Exception'. An e
+  CS0117   methods=   5,963  errs=  10,927  e.g. 'string' does not contain a definition for 'JoinCore'
+  CS0023   methods=   4,197  errs=   6,978  e.g. Operator '++' cannot be applied to operand of type 'object'
+  CS1503   methods=   4,061  errs=   8,969  e.g. Argument 2: cannot convert from 'int' to 'AppleAuth.Enums.PersonNameFormatterStyle'
+  CS8172   methods=   3,808  errs=   8,697  e.g. Cannot initialize a by-reference variable with a value
+  CS1510   methods=   3,554  errs=   7,977  e.g. A ref or out value must be an assignable variable
+  CS1073   methods=   3,434  errs=   7,757  e.g. Unexpected token 'ref'
+  CS0246   methods=   2,400  errs=   6,708  e.g. The type or namespace name 'MethodImplAttribute' could not be found (are you missing a using directive or an assembly reference?)
+  CS1615   methods=   2,114  errs=   3,469  e.g. Argument 1 may not be passed with the 'ref' keyword
+  CS0104   methods=   1,811  errs=   3,288  e.g. 'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'
+  CS0426   methods=   1,680  errs=   3,750  e.g. The type name '__c__DisplayClass14_0' does not exist in the type 'MainMenu'
+  CS0079   methods=   1,159  errs=   2,059  e.g. The event 'EntityViewUpdater.OnEntityInstantiated' can only appear on the left hand side of += or -=
+  CS0221   methods=   1,142  errs=   1,460  e.g. Constant value '4294967295' cannot be converted to a 'int' (use 'unchecked' syntax to override)
+  CS0103   methods=   1,094  errs=   2,133  e.g. The name 'ldftn' does not exist in the current context
+  CS0177   methods=     802  errs=   2,525  e.g. The out parameter 'mainAssetPath' must be assigned to before control leaves the current method
+  CS1620   methods=     638  errs=     982  e.g. Argument 2 must be passed with the 'out' keyword
+
+-- top causes by MESSAGE SHAPE (splits one code into distinct bugs; ranked by methods) --
+  methods=  6,099  CS0019 | Operator '+' cannot be applied to operands of type '<id>' and 'int'
+  methods=  4,230  CS0029 | Cannot implicitly convert type 'System.Type' to 'System.IntPtr'
+  methods=  3,808  CS8172 | Cannot initialize a by-reference variable with a value
+  methods=  3,554  CS1510 | A ref or out value must be an assignable variable
+  methods=  3,434  CS1073 | Unexpected token 'ref'
+  methods=  3,312  CS0019 | Operator '&' cannot be applied to operands of type 'IntPtr' and 'int'
+  methods=  3,162  CS0023 | Operator '++' cannot be applied to operand of type 'object'
+  methods=  3,001  CS0019 | Operator '+' cannot be applied to operands of type 'object' and 'int'
+  methods=  2,884  CS0019 | Operator '>=' cannot be applied to operands of type 'IntPtr' and 'IntPtr'
+  methods=  2,728  CS0019 | Operator '<' cannot be applied to operands of type 'object' and 'int'
+  methods=  2,580  CS0122 | '<id>' is inaccessible due to its protection level
+  methods=  2,346  CS0246 | The type or namespace name '<id>' could not be found (are you missing a using directive or an assembly reference?)
+  methods=  2,341  CS0246 | The type or namespace name 'MethodImpl' could not be found (are you missing a using directive or an assembly reference?)
+  methods=  2,241  CS0266 | Cannot implicitly convert type 'object' to 'int'. An explicit conversion exists (are you missing a cast?)
+  methods=  2,209  CS0019 | Operator '+' cannot be applied to operands of type 'object' and 'object'
+  methods=  1,905  CS0019 | Operator '==' cannot be applied to operands of type 'IntPtr' and 'Type'
+  methods=  1,771  CS0019 | Operator '*' cannot be applied to operands of type 'object' and 'int'
+  methods=  1,746  CS0122 | 'ThrowHelper' is inaccessible due to its protection level
+  methods=  1,709  CS0019 | Operator '-' cannot be applied to operands of type 'object' and 'int'
+  methods=  1,497  CS0019 | Operator '>=' cannot be applied to operands of type 'object' and 'int'
+  methods=  1,359  CS0019 | Operator '>>' cannot be applied to operands of type 'object' and 'int'
+  methods=  1,341  CS0104 | 'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'
+  methods=  1,100  CS0266 | Cannot implicitly convert type 'object' to 'System.IntPtr'. An explicit conversion exists (are you missing a cast?)
+  methods=  1,056  CS0103 | The name 'ldftn' does not exist in the current context
+  methods=  1,011  CS1615 | Argument 1 may not be passed with the 'ref' keyword
+  methods=    990  CS0019 | Operator '+' cannot be applied to operands of type 'object' and 'IntPtr'
+  methods=    956  CS0266 | Cannot implicitly convert type 'object' to 'System.Delegate'. An explicit conversion exists (are you missing a cast?)
+  methods=    938  CS0221 | Constant value '4294967295' cannot be converted to a 'int' (use 'unchecked' syntax to override)
+  methods=    935  CS0019 | Operator '<' cannot be applied to operands of type 'IntPtr' and 'IntPtr'
+  methods=    927  CS0019 | Operator '==' cannot be applied to operands of type 'IntPtr' and 'int'
+
+-- top CLASS-LEVEL error codes (structural, kill whole types) --
+  CS0636      2,512   e.g. The FieldOffset attribute can only be placed on members of types marked with the StructLayout(LayoutKind.Explicit)
+  CS0246      1,890   e.g. The type or namespace name 'MethodImplAttribute' could not be found (are you missing a using directive or an assembly reference?)
+  CS0122      1,716   e.g. 'Buffer<TElement>' is inaccessible due to its protection level
+  CS0052        384   e.g. Inconsistent accessibility: field type '_PrivateImplementationDetails_.ValueTypeNPrivateSealed66' is less accessible than field '_PrivateImp
+  CS8623        374   e.g. Explicit application of 'System.Runtime.CompilerServices.NullableAttribute' is not allowed.
+  CS0617        365   e.g. 'menuName' is not a valid named attribute argument. Named attribute arguments must be fields which are not readonly, static, or const, or re
+  CS0616        333   e.g. 'Nullable' is not an attribute class
+  CS1503        301   e.g. Argument 2: cannot convert from 'int' to 'AppleAuth.Enums.PersonNameFormatterStyle'
+  CS0104        181   e.g. 'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'
+  CS0535        176   e.g. 'GameEventsService' does not implement interface member 'IGameEventsService.GetLeaderboardScorePerRound(GameEvent, int)'
+  CS8335        175   e.g. Do not use 'System.Runtime.CompilerServices.NullableContextAttribute'. This is reserved for compiler usage.
+  CS0534        173   e.g. 'ControllerTemplate.ZLOgUXjjWrIpfPEbmgeGsxJWJjEy' does not implement inherited abstract member 'ControllerTemplate.gwBXOpXdcaPCdFtopfeMjzVrG
+  CS0539         78   e.g. 'xExZPlwOYSQiIkFqHDDyWovrVnsK.gSGPOkiSYxmzVlkCHRUqPJMSLrwM()' in explicit interface declaration is not found among members of the interface 
+  CS1716         69   e.g. Do not use 'System.Runtime.CompilerServices.FixedBuffer' attribute. Use the 'fixed' field modifier instead.
+  CS0738         55   e.g. 'GameEventsService' does not implement interface member 'IGameEventsService.GetAllVisibleEvents()'. 'GameEventsService.GetAllVisibleEvents()

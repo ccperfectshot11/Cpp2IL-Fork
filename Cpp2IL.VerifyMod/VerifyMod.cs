@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -45,6 +45,10 @@ public class VerifyMod : MelonMod
         // metode, prin alt mecanism, si scrie in alte fisiere. Cele doua NU ruleaza in aceeasi sesiune -
         // maturarea fazei 2 cheama fiecare metoda a jocului de zece mii de ori cu intrari ostile, iar un
         // carlig pus peste asa ceva ar amesteca doua experimente si niciunul n-ar mai insemna nimic.
+        // Inainte de orice: daca s-a cerut un backend local, se armeaza acum, fiindca Initializer.Awake
+        // ruleaza devreme si un carlig pus dupa el nu mai prinde nimic.
+        BackendRedirect.Install(HarmonyInstance, message => LoggerInstance.Msg(message));
+
         _substitution = SubstitutionHarness.Configure(_directory, HarmonyInstance, message => LoggerInstance.Msg(message), BuildNativeIndex);
         if (_substitution)
             return;

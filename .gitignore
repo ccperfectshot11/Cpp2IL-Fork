@@ -28,3 +28,4 @@ baseline_064.json
 bodyscan-runs/marker_methods.json
 rc_*.log
 vc*.log
+/worktrees/

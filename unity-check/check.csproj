@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS0108;CS0114;CS0465;CS0169;CS0649;CS0162</NoWarn>
+    <ErrorReportLimit>0</ErrorReportLimit>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="C:/Users/Helper/Desktop/StumblePeakUnity/ExportedProject/Assets/Scripts/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="C:/Program Files/Unity/Hub/Editor/2021.3.25f1/Editor/Data/Managed/UnityEngine/*.dll" />
+    <Reference Include="C:/Users/Helper/Desktop/StumblePeakUnity/ExportedProject/Assets/Plugins/*.dll" />
+    <Reference Include="C:/Users/Helper/Desktop/StumblePeakUnity/ExportedProject/Library/PackageCache/com.unity.nuget.newtonsoft-json@3.2.0/Runtime/Newtonsoft.Json.dll" />
+  </ItemGroup>
+</Project>
