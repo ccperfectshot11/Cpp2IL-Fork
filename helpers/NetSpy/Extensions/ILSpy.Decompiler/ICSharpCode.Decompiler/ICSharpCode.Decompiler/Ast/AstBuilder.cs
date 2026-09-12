@@ -969,7 +969,16 @@ namespace ICSharpCode.Decompiler.Ast {
 				return ConvertType(ts.TypeSig, typeAttributes, ref typeIndex, options, depth, sb);
 
 			if (type.DeclaringType != null && (options & ConvertTypeOptions.DoNotIncludeEnclosingType) == 0) {
-				AstType typeRef = ConvertType(type.DeclaringType, typeAttributes, ref typeIndex, options & ~ConvertTypeOptions.IncludeTypeParameterDefinitions, depth, sb);
+				// The enclosing type is emitted as the Target of a MemberType, i.e. in type-name position.
+				// A C# namespace_or_type_name must begin with an identifier, so a predefined-type keyword is
+				// never legal there. Without this flag System.Decimal/DecCalc came out as "decimal.DecCalc":
+				// the parser reads that as a member-access expression (predefined_type '.' identifier, which
+				// is legal in expression position) and then demands a ';' before the declared name, so a
+				// local declaration became CS1002 and "default(decimal.DecCalc)" became CS1026 + CS1513.
+				// Suppressing the keyword substitution for the enclosing chain only yields
+				// "System.Decimal.DecCalc", which parses in both positions. Generic arguments are converted
+				// in the TypeSig overload with the unmodified options, so "List<int>" keeps its keyword.
+				AstType typeRef = ConvertType(type.DeclaringType, typeAttributes, ref typeIndex, (options & ~ConvertTypeOptions.IncludeTypeParameterDefinitions) | ConvertTypeOptions.DoNotUsePrimitiveTypeNames, depth, sb);
 				string namepart = ICSharpCode.NRefactory.TypeSystem.ReflectionHelper.SplitTypeParameterCountFromReflectionName(type.Name);
 				MemberType memberType = new MemberType { Target = typeRef, MemberNameToken = Identifier.Create(namepart).WithAnnotation(type) };
 				memberType.AddAnnotation(type);

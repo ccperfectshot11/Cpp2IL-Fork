@@ -97,6 +97,25 @@ namespace NetSpyAdapter
         private static readonly Regex RefArithmetic = new Regex(@"(?<![\w>\])])\(ref \w+\)\s*[-+]\s*\w+", RegexOptions.Compiled);
         private static readonly Regex RefValue = new Regex(@"(?<![\w>\])])\(ref \w+\)", RegexOptions.Compiled);
 
+        // Regula 3 nu poate ajunge niciodata la forma "(Cast)(ref x)". Lookbehind-ul (?<![\w>\])]) a
+        // fost pus ca sa apere un apel adevarat - Foo(ref x), Foo<T>(ref x) - dar ')' nu inchide numai
+        // o lista de argumente, inchide si o conversie, asa ca paranteza castului activeaza garda si
+        // expresia ramane nerescrisa. Numarat in exportul masurat: 690 de "(ref x)", dintre care 639
+        // precedate de un caracter de identificator si 37 de '>' (apeluri reale, pe care nu avem voie sa
+        // le atingem), 0 fara niciun prefix - deci regula 3 nu mai rescrie azi nimic - si exact 14
+        // precedate de ')'. Cele 14 sunt fix cele 14 erori CS1525 "Invalid expression term 'ref'" si
+        // toate au aceeasi forma, "(global::System.IntPtr)(ref x)".
+        // De ce nu poate prinde un apel: tiparul cere DOUA grupuri de paranteze lipite, "(Tip)(ref x)",
+        // iar paranteza deschisa a castului trebuie sa nu fie ea insasi precedata de [\w>\])]. Un apel
+        // are un singur grup, iar la "Foo(a)(ref x)" grupul "(a)" e precedat de 'o', deci garda il sare;
+        // la "((Func)d)(ref x)" continutul nu e un nume de tip, deci nu se potriveste deloc.
+        // Scriem "default(Tip)", nu "default" simplu ca regula 3, ca sa pastram tipul static pe care il
+        // dadea castul: e o expresie primara valida in orice context, fara sa depinda de inferarea
+        // tipului tinta. Comparatia ramane una la rulare, nu o constanta, deci nu apare cod inaccesibil.
+        private static readonly Regex RefCastValue = new Regex(
+            @"(?<![\w>\])])\(((?:global::)?[A-Za-z_][A-Za-z0-9_.]*(?:<[A-Za-z0-9_.,:<> ]*>)?)\)\(ref \w+\)",
+            RegexOptions.Compiled);
+
         // The injected Cpp2IL attributes carry [AttributeUsage(<int>, AllowMultiple = true)] where the
         // AttributeTargets argument decompiles to a bare int. That does not compile (no implicit int->
         // enum conversion), which disables AllowMultiple and turns every legitimate duplicate
@@ -157,6 +176,10 @@ namespace NetSpyAdapter
             code = RefArithmetic.Replace(code, "default");
             // 3) Any remaining "(ref local)" used as a value -> placeholder.
             code = RefValue.Replace(code, "default");
+            // 3b) "(Cast)(ref local)" - aceeasi valoare, dar sub un cast, forma pe care garda regulii 3
+            //     o sare. Vezi comentariul de la RefCastValue pentru numaratoare si pentru motivul
+            //     pentru care tiparul nu poate atinge un apel.
+            code = RefCastValue.Replace(code, "default(${1})");
             // 4) [AttributeUsage(64, ...)] -> [AttributeUsage(AttributeTargets.All, ...)]. The bare int
             //    does not compile (disabling AllowMultiple -> CS0579 on duplicate [Calls]). We widen the
             //    target to All rather than cast the exact value: these injected attributes are just
