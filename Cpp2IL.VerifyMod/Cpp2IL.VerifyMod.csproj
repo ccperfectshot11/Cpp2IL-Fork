@@ -26,6 +26,13 @@
 
   <ItemGroup>
     <Reference Include="MelonLoader"><HintPath>$(Net6)\MelonLoader.dll</HintPath><Private>false</Private></Reference>
+    <!-- Faza 3 carliga metodele jocului. HarmonyX este chiar cel pe care il incarca MelonLoader, iar
+         Il2CppInterop.HarmonySupport - prezent in acelasi director si initializat de MelonLoader - este
+         piesa care face ca un patch peste o metoda interop sa ajunga la functia NATIVA prin
+         Il2CppDetourMethodPatcher; fara ea carligul n-ar prinde niciun apel al jocului insusi.
+         Private=false, ca la toate celelalte: DLL-ul exista deja langa joc, iar o copie in Mods ar da
+         doua identitati ale aceluiasi assembly si patch-urile ar ajunge in instanta gresita. -->
+    <Reference Include="0Harmony"><HintPath>$(Net6)\0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppInterop.Runtime"><HintPath>$(Net6)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppInterop.Common"><HintPath>$(Net6)\Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2Cppmscorlib"><HintPath>$(Il2Cpp)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>

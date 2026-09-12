@@ -33,18 +33,36 @@ public class VerifyMod : MelonMod
     private bool _ran;
     private bool _auto;
     private int _frames;
+    private bool _substitution;
+    private bool _substitutionPrepared;
 
     public override void OnInitializeMelon()
     {
         _directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
+        _auto = Environment.GetEnvironmentVariable("CPP2IL_VERIFY_AUTO") == "1";
+
+        // Faza 3 sta pe comutatorul ei si nu are nevoie de fisierul fazei 1: masoara alta populatie de
+        // metode, prin alt mecanism, si scrie in alte fisiere. Cele doua NU ruleaza in aceeasi sesiune -
+        // maturarea fazei 2 cheama fiecare metoda a jocului de zece mii de ori cu intrari ostile, iar un
+        // carlig pus peste asa ceva ar amesteca doua experimente si niciunul n-ar mai insemna nimic.
+        _substitution = SubstitutionHarness.Configure(_directory, HarmonyInstance, message => LoggerInstance.Msg(message), BuildNativeIndex);
+        if (_substitution)
+            return;
+
+        // Ceruta dar cazuta la configurare: nu se cade inapoi pe maturare. Vezi nota lui
+        // SubstitutionHarness.Requested - un comutator scris gresit nu are voie sa porneasca alt experiment.
+        if (SubstitutionHarness.Requested)
+        {
+            LoggerInstance.Msg("Faza 3 a fost ceruta dar nu a putut porni; maturarea fazei 2 NU se porneste in locul ei.");
+            _ran = true;
+            return;
+        }
 
         if (!File.Exists(Path.Combine(_directory, InputFile)))
         {
             LoggerInstance.Msg($"No {InputFile} beside the mod - nothing to verify.");
             return;
         }
-
-        _auto = Environment.GetEnvironmentVariable("CPP2IL_VERIFY_AUTO") == "1";
 
         if (_auto)
         {
@@ -64,6 +82,12 @@ public class VerifyMod : MelonMod
     // and the crash journal below must already name the culprit so the next run gets past it.
     public override void OnUpdate()
     {
+        if (_substitution)
+        {
+            TickSubstitution();
+            return;
+        }
+
         if (_ran)
             return;
 
@@ -86,6 +110,57 @@ public class VerifyMod : MelonMod
         {
             LoggerInstance.Error($"Verification run failed: {ex}");
         }
+    }
+
+    /// <summary>
+    /// Faza 3, condusa cadru cu cadru si nu dintr-o bucla: harnasul ARMEAZA o metoda si apoi trebuie sa
+    /// astepte ca jocul sa o cheme singur. O bucla ar tine firul principal ocupat exact cand jocul ar avea
+    /// nevoie de el ca sa ajunga la punctul de apel, adica ar face imposibil chiar lucrul pe care il asteapta.
+    /// </summary>
+    private void TickSubstitution()
+    {
+        // Acelasi ragaz de cadre ca maturarea, si din acelasi motiv: Il2CppInterop isi umple lenes cache-ul
+        // de tipuri, iar un index construit prea devreme arata ca si cum jocul n-ar avea metodele.
+        if (++_frames < 300)
+            return;
+
+        if (!_substitutionPrepared)
+        {
+            _substitutionPrepared = true;
+
+            try
+            {
+                SubstitutionHarness.Prepare();
+            }
+            catch (Exception ex)
+            {
+                LoggerInstance.Error($"Faza 3 nu a putut porni: {ex}");
+                _substitution = false;
+            }
+
+            return;
+        }
+
+        try
+        {
+            SubstitutionHarness.Tick();
+        }
+        catch (Exception ex)
+        {
+            LoggerInstance.Error($"Faza 3 s-a oprit: {ex}");
+            _substitution = false;
+            return;
+        }
+
+        if (!SubstitutionHarness.Finished)
+            return;
+
+        _substitution = false;
+
+        // La fel ca maturarea: o rulare pornita de un script trebuie sa se termine singura, altfel
+        // harnasul ar astepta o fereastra pe care nu o inchide nimeni.
+        if (_auto)
+            UnityEngine.Application.Quit();
     }
 
     private void Run(string phase1Path, string outputPath)
