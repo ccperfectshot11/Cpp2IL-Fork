@@ -96,6 +96,63 @@ internal static class TargetUniverse
         return AssemblyClass.InHouse;
     }
 
+    /// <summary>
+    /// Fragmente de NUME DE METODA care nu se cheama, oricat de inofensiv ar fi tipul din care fac parte.
+    ///
+    /// Exista pentru ca faza 4 este prima care CHEAMA metodele, nu doar le observa, iar filtrul de siguranta
+    /// mostenit de la faza 3 se uita numai la numele TIPULUI. Gasit cu degetul pe recensamant, nu presupus:
+    /// "MainMenu::AttemptQuickLogin" sta intr-un tip numit MainMenu, deci trece de fiecare fragment de tip
+    /// din lista - "Login" prinde LoginMenuHandler, dar nu prinde o metoda de login dintr-un tip cu nume
+    /// nevinovat. Fara randurile de mai jos, exact aceea ar fi fost chemata.
+    ///
+    /// Lista este scurta dinadins si tine numai ce nu se poate lua inapoi: bani, cont, date sterse, trafic
+    /// trimis in afara. Verbe foarte des intalnite - Reset, Clear, Save, Send - au fost lasate AFARA anume,
+    /// si nu din neglijenta: ar taia mii de metode de desen si de pooling, iar pe un receptor fabricat pe
+    /// zero, care este un obiect de unica folosinta ce nu apartine jocului, un Reset nu atinge nimic viu.
+    /// Primejdia adevarata sunt metodele STATICE, care lucreaza pe stare globala - si tocmai acelea se
+    /// maturaza primele.
+    ///
+    /// Fragmentele au fost si taiate dupa ce au fost numarate, nu doar adaugate dupa ureche. "Register" a
+    /// iesit fiindca prindea RegisterCallback, RegisterListener si RegisterHandler - 116 metode de plumbarie
+    /// inofensiva pentru care lista de tipuri acopera oricum partea de cont; "Subscribe" a iesit din acelasi
+    /// motiv, 130 de metode de evenimente, iar abonamentele platite sunt prinse de fragmentul de TIP
+    /// "Subscription". Costul masurat al listei, dupa taiere: 917 de metode din 58.972, adica 1,55%.
+    /// </summary>
+    private static readonly string[] NeverCallMethodFragments =
+    {
+        // bani
+        "Purchase", "Buy", "Checkout", "Refund", "Redeem", "Consume", "RestoreTransaction",
+        // cont si identitate
+        "Login", "LogIn", "SignIn", "SignUp", "Logout", "LogOut", "SignOut",
+        "Authenticate", "Authorize", "Credential", "Password", "RefreshToken",
+        // date care nu se mai intorc
+        "Delete", "Erase", "Wipe", "Purge", "Unlink",
+        // trafic catre afara
+        "Upload", "SendEvent", "LogEvent", "TrackEvent", "ReportEvent", "Flush",
+        // sesiuni de joc in retea
+        "Matchmak", "JoinRoom", "LeaveRoom", "JoinLobby", "Connect",
+        // sanctiuni. "Banned", nu "Ban": potrivirea este pe subsir, iar "Ban" prinde Banner, Band si
+        // Bandwidth - adica exact codul de interfata pe care vrem sa-l masuram. Masurat pe recensamant,
+        // "Ban" taia 154 de metode, "Banned" taie 9.
+        "Banned", "Kick",
+    };
+
+    /// <summary>
+    /// Adevarat daca metoda nu are voie sa fie chemata din cauza numelui ei. Potrivirea este pe subsir si
+    /// fara diferenta de litere mari si mici, la fel ca la numele de tip.
+    /// </summary>
+    public static bool NeverCall(string method)
+    {
+        if (method == null)
+            return false;
+
+        foreach (var fragment in NeverCallMethodFragments)
+            if (method.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+        return false;
+    }
+
     public static bool InUniverse(string assembly) => Classify(assembly) == AssemblyClass.InHouse;
 
     /// <summary>

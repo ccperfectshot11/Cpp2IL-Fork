@@ -192,7 +192,12 @@ internal static class MethodRequirements
             blockers.Add("cheia nu exista in indexul jocului - nu exista cu ce compara");
 
         if (safetyOn && !SubstSafety.MayTouch(assembly, requirement.Type))
-            blockers.Add("exclusa de lista de siguranta (plati, cont, telemetrie, retea)");
+            blockers.Add("exclusa de lista de siguranta pe tip (plati, cont, telemetrie, retea)");
+
+        // Filtrul pe numele METODEI, nu al tipului. Faza 4 este prima care cheama, nu doar observa, si un
+        // tip cu nume nevinovat poate avea o metoda care nu are ce cauta intr-un apel de proba.
+        if (safetyOn && TargetUniverse.NeverCall(requirement.Method))
+            blockers.Add("exclusa de lista de siguranta pe numele metodei");
 
         var universe = TargetUniverse.Classify(assembly);
         if (universe == AssemblyClass.Stubbed)
