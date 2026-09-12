@@ -35,11 +35,37 @@ public class VerifyMod : MelonMod
     private int _frames;
     private bool _substitution;
     private bool _substitutionPrepared;
+    private bool _active;
+    private bool _activePrepared;
 
     public override void OnInitializeMelon()
     {
         _directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
         _auto = Environment.GetEnvironmentVariable("CPP2IL_VERIFY_AUTO") == "1";
+
+        // Faza 4 se verifica PRIMA si le exclude pe celelalte. Cele trei masoara populatii diferite prin
+        // mecanisme diferite, iar doua pornite in aceeasi sesiune ar amesteca doua experimente si niciunul
+        // n-ar mai insemna nimic: maturarea fazei 2 cheama fiecare metoda a jocului de zece mii de ori cu
+        // intrari ostile, faza 3 pune carlige si asteapta apelurile adevarate ale jocului, iar faza 4 cheama
+        // ea insasi ambele implementari. Un carlig al fazei 3 peste o metoda pe care faza 4 tocmai o cheama
+        // ar masura chiar apelul nostru, nu al jocului.
+        _active = ActiveSweep.Configure(_directory, message => LoggerInstance.Msg(message), BuildNativeIndex);
+        if (_active)
+        {
+            if (SubstitutionHarness.Requested)
+                LoggerInstance.Warning("CPP2IL_SUBST si CPP2IL_ACTIVE sunt amandoua pornite; faza 4 castiga, faza 3 nu porneste.");
+
+            return;
+        }
+
+        // Ceruta dar cazuta la configurare: nu se cade inapoi pe nicio alta faza. Acelasi rationament ca la
+        // faza 3 de mai jos - un comutator scris gresit nu are voie sa porneasca alt experiment.
+        if (ActiveSweep.Requested)
+        {
+            LoggerInstance.Msg("Faza 4 a fost ceruta dar nu a putut porni; nu se porneste alta faza in locul ei.");
+            _ran = true;
+            return;
+        }
 
         // Faza 3 sta pe comutatorul ei si nu are nevoie de fisierul fazei 1: masoara alta populatie de
         // metode, prin alt mecanism, si scrie in alte fisiere. Cele doua NU ruleaza in aceeasi sesiune -
@@ -82,6 +108,12 @@ public class VerifyMod : MelonMod
     // and the crash journal below must already name the culprit so the next run gets past it.
     public override void OnUpdate()
     {
+        if (_active)
+        {
+            TickActive();
+            return;
+        }
+
         if (_substitution)
         {
             TickSubstitution();
@@ -110,6 +142,62 @@ public class VerifyMod : MelonMod
         {
             LoggerInstance.Error($"Verification run failed: {ex}");
         }
+    }
+
+    /// <summary>
+    /// Faza 4, condusa tot cadru cu cadru, dar din alt motiv decat faza 3.
+    ///
+    /// Faza 3 asteapta ca jocul sa cheme metoda, deci nu are ce cauta intr-o bucla. Faza 4 nu asteapta pe
+    /// nimeni si ar putea, in principiu, sa parcurga tot universul intr-un singur cadru - si tocmai de aceea
+    /// nu o face. Zeci de mii de apeluri intr-un cadru inseamna un joc inghetat minute in sir, pe care
+    /// Windows il arata ca "nu raspunde" si pe care utilizatorul sau sistemul il omoara - iar o metoda
+    /// omorata asa ajunge in jurnal drept vinovata de o cadere pe care nu a produs-o. Cate
+    /// CPP2IL_ACTIVE_PER_FRAME pe cadru, si jocul ramane viu intre transe.
+    /// </summary>
+    private void TickActive()
+    {
+        // Acelasi ragaz de cadre ca la celelalte faze si pentru acelasi motiv: Il2CppInterop isi umple lenes
+        // cache-ul de tipuri, iar un index construit prea devreme arata ca si cum jocul n-ar avea metodele.
+        if (++_frames < 300)
+            return;
+
+        if (!_activePrepared)
+        {
+            _activePrepared = true;
+
+            try
+            {
+                ActiveSweep.Prepare();
+            }
+            catch (Exception ex)
+            {
+                LoggerInstance.Error($"Faza 4 nu a putut porni: {ex}");
+                _active = false;
+            }
+
+            return;
+        }
+
+        try
+        {
+            ActiveSweep.Tick();
+        }
+        catch (Exception ex)
+        {
+            LoggerInstance.Error($"Faza 4 s-a oprit: {ex}");
+            _active = false;
+            return;
+        }
+
+        if (!ActiveSweep.Finished)
+            return;
+
+        _active = false;
+
+        // La fel ca celelalte faze: o rulare pornita de un script trebuie sa se termine singura, altfel
+        // runner-ul ar astepta o fereastra pe care nu o inchide nimeni.
+        if (_auto)
+            UnityEngine.Application.Quit();
     }
 
     /// <summary>
