@@ -47,6 +47,9 @@ namespace Cpp2IL.VerifyMod;
 ///   CPP2IL_ACTIVE_RECEIVERS=0  numai metode statice, niciun receptor fabricat
 ///   CPP2IL_ACTIVE_PREJIT=0     nu mai compileaza corpul recuperat inainte de apel (implicit compileaza)
 ///   CPP2IL_ACTIVE_ENUM_DOMAIN=0  enum-urile se fuzzeaza pe tot intervalul intregului, nu pe valorile declarate
+///   CPP2IL_ACTIVE_PREPARE_PASS=0 fara trecere de pregatire separata (pregatirea ramane doar per metoda)
+///   CPP2IL_ACTIVE_PREPARE_ALL=1  pregateste TOATE metodele chemabile, nu doar pe cele pe care le cheama sesiunea
+///   CPP2IL_ACTIVE_PREPARE_ONLY=1 se opreste dupa pregatire, fara niciun apel - asa se cladeste lista permanenta
 ///   CPP2IL_ACTIVE_SEED=N       samanta generatorului (implicit 1)
 ///
 /// Rezultatele se aduna in active-results.tsv si nu se rescriu niciodata: o sesiune noua sare peste cheile
@@ -92,6 +95,7 @@ internal static class ActiveSweep
     private const string StagePrepare = "prepare-ours";
     private const string StageCallGame = "call-game";
     private const string StageCallOurs = "call-ours";
+    private const string StagePreparePass = "prepare-pass";
 
     private static Action<string> _log = _ => { };
     private static string _directory = ".";
@@ -105,6 +109,9 @@ internal static class ActiveSweep
     private static bool _receivers;
     private static bool _preJit;
     private static bool _enumDomain;
+    private static bool _preparePass;
+    private static bool _prepareAll;
+    private static bool _prepareOnly;
     private static string _dllDirectory = "";
     private static string _filter = "";
     private static string _skipAssemblies = "";
@@ -113,6 +120,13 @@ internal static class ActiveSweep
     private static ulong _seed;
 
     private static List<string[]> _queue;
+    private static List<string[]> _prepareQueue;
+    private static HashSet<string> _prepareFailed;
+    private static int _prepareAt;
+    private static int _lastPrepareLogged;
+    private static int _preparedOk;
+    private static int _prepareUnresolved;
+    private static bool _preparing;
     private static int _queueAt;
     private static int _lastLogged;
     private static bool _finished;
@@ -153,6 +167,9 @@ internal static class ActiveSweep
         _receivers = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_RECEIVERS") != "0";
         _preJit = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREJIT") != "0";
         _enumDomain = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_ENUM_DOMAIN") != "0";
+        _preparePass = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_PASS") != "0";
+        _prepareAll = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_ALL") == "1";
+        _prepareOnly = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_ONLY") == "1";
 
         _max = Number("CPP2IL_ACTIVE_MAX", 2000, allowZero: true);
         _perFrame = Number("CPP2IL_ACTIVE_PER_FRAME", 25, allowZero: false);
@@ -338,12 +355,14 @@ internal static class ActiveSweep
     private static void BuildQueue(string dumpPath)
     {
         var measured = AlreadyMeasured();
-        _queue = new List<string[]>();
+        var candidates = new List<string[]>();
+        _prepareFailed = new HashSet<string>(StringComparer.Ordinal);
 
         var total = 0;
         var blocked = 0;
         var done = 0;
         var skipped = 0;
+        var deferred = 0;
 
         foreach (var line in File.ReadLines(dumpPath))
         {
@@ -371,7 +390,7 @@ internal static class ActiveSweep
                 continue;
             }
 
-            _queue.Add(fields);
+            candidates.Add(fields);
         }
 
         // Intai STATICELE, si nu din gust pentru ordine. O metoda statica se cheama fara receptor, deci nu
@@ -380,6 +399,24 @@ internal static class ActiveSweep
         // verificari de nul, asa ca o dereferentiere a unui camp zero nu da NullReferenceException, ci o
         // violare de acces care omoara procesul. Cu staticele in fata, primele sesiuni scot rezultate fara
         // sa fie intrerupte, iar caderile incep abia dupa ce partea ieftina este deja in fisier.
+        // Coada de APELURI. Cand receptorii sunt opriti, metodele de instanta nu intra deloc in ea - nu se
+        // inregistreaza pentru ele un NOT_ATTEMPTED cu motivul "receptorii sunt opriti din configurare".
+        // Diferenta nu este cosmetica: un rezultat scris inseamna metoda MASURATA, iar AlreadyMeasured o
+        // sare in toate sesiunile urmatoare. Asa, o sesiune statica ar fi ingropat definitiv cele 21.260 de
+        // metode de instanta pe care tocmai modul full trebuie sa le masoare, si nimeni nu ar fi observat
+        // decat dupa ce modul full ar fi raportat ca nu mai are ce face.
+        _queue = new List<string[]>(candidates.Count);
+        foreach (var row in candidates)
+        {
+            if (!_receivers && row[ColStatic] != "1")
+            {
+                deferred++;
+                continue;
+            }
+
+            _queue.Add(row);
+        }
+
         _queue.Sort((a, b) =>
         {
             var byStatic = string.CompareOrdinal(b[ColStatic], a[ColStatic]);
@@ -393,10 +430,23 @@ internal static class ActiveSweep
         if (_max > 0 && _queue.Count > _max)
             _queue = _queue.GetRange(0, _max);
 
-        _log("Univers " + total + ": " + blocked + " blocate, " + done + " deja masurate, "
-            + skipped + " sarite dupa caderi. Sesiunea asta incearca " + _queue.Count + ".");
+        // Coada de PREGATIRE. Compilarea nu are nevoie nici de receptor, nici de argumente, deci poate
+        // acoperi si metodele pe care sesiunea asta nu le cheama. Acolo este si castigul cerut: o singura
+        // trecere cu CPP2IL_ACTIVE_PREPARE_ALL=1 cladeste lista de ucigasi peste TOT ce este chemabil, iar
+        // pe urma si modul static si modul full pornesc cu ea gata facuta, in loc sa o descopere fiecare.
+        if (_preparePass)
+        {
+            _prepareQueue = _prepareAll ? candidates : _queue;
+            _preparing = _prepareQueue.Count > 0;
+        }
 
-        if (_queue.Count == 0)
+        _log("Univers " + total + ": " + blocked + " blocate, " + done + " deja masurate, "
+            + skipped + " sarite dupa caderi"
+            + (deferred > 0 ? ", " + deferred + " de instanta lasate pentru o sesiune cu receptori" : "")
+            + ". Sesiunea asta incearca " + _queue.Count
+            + (_preparing ? ", dupa ce pregateste " + _prepareQueue.Count : "") + ".");
+
+        if (_queue.Count == 0 && !_preparing)
         {
             // Nimic de facut nu inseamna nimic de spus: raportul se scrie oricum, fiindca el aduna TOATE
             // sesiunile de pana acum, iar runner-ul are nevoie de el tocmai cand universul s-a terminat.
@@ -497,7 +547,131 @@ internal static class ActiveSweep
 
     public static void Tick()
     {
-        if (_finished || _queue == null)
+        if (_finished)
+            return;
+
+        if (_preparing)
+        {
+            TickPrepare();
+            return;
+        }
+
+        TickCall();
+    }
+
+    /// <summary>
+    /// Trecerea de pregatire: se compileaza corpul recuperat al fiecarei metode din coada, si NU se cheama
+    /// nimic.
+    ///
+    /// De ce separat de apeluri, desi pregatirea per metoda facea deja acelasi lucru cu o linie mai jos.
+    /// Diferenta nu este in cate reporniri ies - tot atatea - ci in ce ramane dupa ele. O metoda pe care
+    /// JIT-ul o omoara costa o repornire O SINGURA DATA, fiindca ajunge in active-skip.txt, iar una pe care
+    /// o refuza cuminte ajunge in active-results.tsv ca IL_INVALID. Amandoua fisierele sunt citite de orice
+    /// sesiune urmatoare, indiferent de mod. Cu pregatirea amestecata printre apeluri, descoperirea asta se
+    /// face din nou in fiecare mod si se plateste de fiecare data; asezata in fata, se plateste o data si
+    /// faza de apeluri porneste pe o coada din care JIT-ul nu mai are ce sa doboare.
+    ///
+    /// Pregatirea se reface la FIECARE pornire, si asta nu este risipa. Compilarea traieste in proces, nu pe
+    /// disc: un proces nou nu stie nimic despre ce a compilat cel dinainte, iar garantia care face faza de
+    /// apeluri linistita este tocmai ca fiecare metoda a trecut prin JIT in ACEST proces. Un catalog cu
+    /// "pregatita cu bine" ar scurta pornirea si ar desfiinta chiar garantia pentru care exista trecerea.
+    /// </summary>
+    private static void TickPrepare()
+    {
+        if (_prepareQueue == null)
+        {
+            FinishPrepare();
+            return;
+        }
+
+        for (var i = 0; i < _perFrame && _prepareAt < _prepareQueue.Count; i++)
+            StepPrepare(_prepareQueue[_prepareAt++]);
+
+        if (_prepareAt < _prepareQueue.Count)
+        {
+            if (_prepareAt - _lastPrepareLogged >= 500)
+            {
+                _lastPrepareLogged = _prepareAt;
+                _log("  pregatite " + _prepareAt + " / " + _prepareQueue.Count
+                    + " (refuzate " + (_prepareFailed?.Count ?? 0) + ")...");
+            }
+
+            return;
+        }
+
+        FinishPrepare();
+    }
+
+    private static void StepPrepare(string[] row)
+    {
+        var key = row[ColKey];
+        var assembly = row[ColAssembly];
+
+        // Acelasi jurnal ca la apeluri, cu etapa lui: o metoda care omoara JIT-ul trebuie sa-si spuna numele
+        // inainte, altfel repornirea nu are ce sari.
+        WriteJournal(key, assembly, row[ColQuality], StagePreparePass);
+
+        MethodBase ours;
+        try
+        {
+            ours = _recovered.Index(assembly).TryGetValue(key, out var found) ? found : null;
+        }
+        catch (Exception)
+        {
+            ours = null;
+        }
+
+        if (ours == null)
+        {
+            // Nerezolvata aici nu se inregistreaza ca rezultat: faza de apeluri ajunge la ea si scrie motivul
+            // adevarat. Daca am scrie un rand acum, metoda ar fi socotita masurata si nu s-ar mai incerca.
+            _prepareUnresolved++;
+            return;
+        }
+
+        if (!PrepareOurs(ours, out var error))
+        {
+            _prepareFailed.Add(key);
+            Record(key, assembly, VerdictIlInvalid, "prepare-pass", row[ColQuality], "", "", error);
+            return;
+        }
+
+        _preparedOk++;
+    }
+
+    private static void FinishPrepare()
+    {
+        _preparing = false;
+
+        var refused = _prepareFailed?.Count ?? 0;
+        _log("Pregatire gata: " + _preparedOk + " compilate, " + refused + " refuzate (IL_INVALID), "
+            + _prepareUnresolved + " nerezolvate.");
+
+        // Coada de apeluri pierde ce a fost refuzat la compilare: metodele acelea au deja un verdict propriu
+        // si un apel peste ele ar cere exact compilarea care tocmai a esuat.
+        if (_queue != null && refused > 0)
+        {
+            var kept = new List<string[]>(_queue.Count);
+            foreach (var row in _queue)
+                if (!_prepareFailed.Contains(row[ColKey]))
+                    kept.Add(row);
+
+            _log("  coada de apeluri: " + _queue.Count + " -> " + kept.Count);
+            _queue = kept;
+        }
+
+        if (_prepareOnly)
+        {
+            _log("CPP2IL_ACTIVE_PREPARE_ONLY=1 - lista este cladita, nu se cheama nicio metoda.");
+            CloseJournal();
+            Summarise();
+            _finished = true;
+        }
+    }
+
+    private static void TickCall()
+    {
+        if (_queue == null)
             return;
 
         for (var i = 0; i < _perFrame && _queueAt < _queue.Count; i++)
@@ -1226,6 +1400,18 @@ internal static class ActiveSweep
         builder.AppendLine("faza 4 - maturare activa");
         builder.AppendLine("dll: " + _dllDirectory);
         builder.AppendLine("incercate in sesiunea asta: " + _queueAt + " din " + (_queue?.Count ?? 0));
+
+        if (_prepareQueue != null)
+        {
+            builder.AppendLine("pregatire: " + _prepareAt + " din " + _prepareQueue.Count
+                + " - " + _preparedOk + " compilate, " + (_prepareFailed?.Count ?? 0) + " refuzate (IL_INVALID), "
+                + _prepareUnresolved + " nerezolvate");
+            builder.AppendLine("   ATENTIE: PrepareMethod compileaza corpul metodei, NU si corpurile pe care le");
+            builder.AppendLine("   cheama ea. Un apelat care nu a trecut si el prin trecerea de pregatire se");
+            builder.AppendLine("   compileaza abia la primul apel si poate cadea acolo. Cu");
+            builder.AppendLine("   CPP2IL_ACTIVE_PREPARE_ALL=1 toate metodele CHEMABILE sunt acoperite; raman pe");
+            builder.AppendLine("   dinafara doar cele blocate din dump, care pot fi si ele apelate din corpuri.");
+        }
         builder.AppendLine("randuri in total (toate sesiunile): " + total);
         builder.AppendLine();
 
