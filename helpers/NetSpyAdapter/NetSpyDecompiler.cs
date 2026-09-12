@@ -124,9 +124,25 @@ namespace NetSpyAdapter
         // properties), so there is nothing to evaluate, and the assignment above keeps the comparison the
         // native code really made. The keyword exclusions are load-bearing - `return;`, `break;`,
         // `continue;` and `throw;` are the only other statements with this one-word shape.
+        // CORECTIE: propozitia de mai sus era falsa, si asta a rupt 1.172 de proprietati in 266 de
+        // fisiere (2.344 din cele 2.416 linii de eroare ale rularii de referinta, toate CS1014 "A get
+        // or set accessor expected"). Cand corpurile reale au inceput sa ajunga in C#, get_X/set_X au
+        // devenit `return this.<X>k__BackingField;` si `this.<X>k__BackingField = value;`, adica exact
+        // tiparul pe care PatternStatementTransform.TransformAutomaticProperties il cauta: el pune
+        // property.Getter.Body = null si property.Setter.Body = null, iar CSharpOutputVisitor.VisitAccessor
+        // scrie atunci numai cuvantul cheie si `;`. Un accesor care nu are modificator propriu ajunge
+        // astfel pe o linie care e fix `<TAB>get;` - aceeasi forma cu a unui local orfan - deci regexul o
+        // stergea si intre acolade ramaneau doar atributele [Token]/[Address], ceea ce strica fisierul
+        // intreg. Cu stub-uri `return default(X);` tiparul nu se potrivea, accesorul isi pastra corpul
+        // si nimic nu se strica; de aceea defectul a aparut abia dupa ce Level3 a inceput sa produca
+        // logica reala. Dovada: in exportul masurat nu supravietuise niciun `get;`/`set;` in 2.675 de
+        // fisiere, iar amprenta "linie de atribut urmata direct de }" apare de 1.139 ori in 258 de
+        // fisiere. Excludem doar get si set: in tot NetSpy exista exact doua atribuiri `Body = null`,
+        // ambele in TransformAutomaticProperties, deci add/remove/init nu pot aparea niciodata fara
+        // corp si nu au ce cauta in lista - i-am scoate degeaba din curatarea locals-ilor orfani.
         private static readonly bool DropBareLocalStatements = Environment.GetEnvironmentVariable("CPP2IL_BARE_LOCAL") != "0";
         private static readonly Regex BareLocalStatement = new Regex(
-            @"(?m)^[ \t]*(?!return\b|break\b|continue\b|throw\b|goto\b|yield\b)[a-z_][A-Za-z0-9_]*[ \t]*;[ \t]*\r?\n",
+            @"(?m)^[ \t]*(?!return\b|break\b|continue\b|throw\b|goto\b|yield\b|get[ \t]*;|set[ \t]*;)[a-z_][A-Za-z0-9_]*[ \t]*;[ \t]*\r?\n",
             RegexOptions.Compiled);
 
         private static string SanitizeInvalidConstructs(string code)
