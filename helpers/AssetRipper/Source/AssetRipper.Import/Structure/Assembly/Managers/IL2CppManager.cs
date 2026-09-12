@@ -50,6 +50,11 @@ public sealed class IL2CppManager : BaseManager
 		new AttributeInjectorProcessingLayer(),
 		new StableRenamingProcessingLayer(),
 		new AttributeAnalysisProcessingLayer(),
+		// Fara el, fiecare camp si metoda privata citita din alt tip da CS0122 la compilarea C#-ului
+		// exportat: codul recuperat pastreaza accesele pe care il2cpp le-a inline-at peste granita de
+		// accesibilitate, dar C#-ul nu are voie sa le scrie. Masurat: 8.140 de erori de felul asta,
+		// din care 1.916 numai pe EntityRef.Raw.
+		new PublicizerProcessingLayer(),
 		new MethodOverrideNameFixer(),
 	];
 
