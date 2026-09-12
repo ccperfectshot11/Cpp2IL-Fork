@@ -52,6 +52,11 @@ param(
     [int]$PerFrame = 25,
     [int]$TimeoutMinutes = 30,
     [int]$Restarts = 0,
+    # Implicit, o cadere a procesului OPRESTE maturarea. Repornirea automata dupa crash a insemnat, la
+    # prima incercare, jocul deschizandu-se si murind de zeci de ori la rand pentru ~110 metode masurate
+    # de fiecare data - adica aproape tot timpul petrecut in pornit jocul, nu in masurat. Cat timp caderea
+    # fatala nu e reparata, repornirea trebuie ceruta pe fata.
+    [switch]$RestartOnCrash,
     [switch]$Redump,
     [switch]$Fresh
 )
@@ -154,6 +159,14 @@ for ($attempt = 0; $attempt -le $Restarts; $attempt++) {
     if (Test-Path $inflight) {
         Write-Host "a murit in:" -ForegroundColor Yellow
         Get-Content $inflight | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+
+    # Rezultatele adunate pana aici sunt deja pe disc si o rulare viitoare le sare, deci oprirea nu pierde
+    # nimic. Metoda din inflight este inregistrata ca CRASHED la urmatoarea pornire, oricand ar fi ea.
+    if (-not $RestartOnCrash) {
+        Write-Host ""
+        Write-Host "procesul a murit. NU repornesc jocul (adauga -RestartOnCrash daca chiar vrei asta)." -ForegroundColor Yellow
+        break
     }
 }
 
