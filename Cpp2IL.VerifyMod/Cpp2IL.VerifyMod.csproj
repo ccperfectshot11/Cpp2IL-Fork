@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- A MelonLoader mod, so it targets what MelonLoader's net6 runtime loads, not what the rest of the
-       solution builds for. It ships as two files into the game's Mods folder: this and VerifyCore. -->
+  <!-- Un mod MelonLoader, deci tinteste ce incarca runtime-ul net6 al lui MelonLoader, nu ce compileaza
+       restul solutiei. Ajunge in directorul Mods al jocului ca doua fisiere: acesta si VerifyCore. -->
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>Cpp2IL.VerifyMod</AssemblyName>
@@ -13,7 +13,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
 
-    <!-- Override with -p:GameDir=... for a different install. -->
+    <!-- Se schimba cu -p:GameDir=... pentru alta instalare. -->
     <GameDir Condition="'$(GameDir)' == ''">C:\Users\Helper\Desktop\StumblePeak</GameDir>
     <MelonDir>$(GameDir)\MelonLoader</MelonDir>
     <Net6>$(MelonDir)\net6</Net6>
@@ -25,19 +25,26 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Private=false peste tot: DLL-urile exista deja langa joc, iar o copie in Mods ar da doua identitati
+         ale aceluiasi assembly, cu tipuri care nu se mai potrivesc intre ele. -->
     <Reference Include="MelonLoader"><HintPath>$(Net6)\MelonLoader.dll</HintPath><Private>false</Private></Reference>
-    <!-- Faza 3 carliga metodele jocului. HarmonyX este chiar cel pe care il incarca MelonLoader, iar
-         Il2CppInterop.HarmonySupport - prezent in acelasi director si initializat de MelonLoader - este
-         piesa care face ca un patch peste o metoda interop sa ajunga la functia NATIVA prin
-         Il2CppDetourMethodPatcher; fara ea carligul n-ar prinde niciun apel al jocului insusi.
-         Private=false, ca la toate celelalte: DLL-ul exista deja langa joc, iar o copie in Mods ar da
-         doua identitati ale aceluiasi assembly si patch-urile ar ajunge in instanta gresita. -->
+
+    <!-- Modul nu mai pune niciun carlig - faza cu Harmony s-a dus odata cu substitutia. Referinta ramane
+         fiindca MelonMod, clasa de baza, are membri ale caror semnaturi poarta tipuri HarmonyLib, iar
+         compilatorul cere assembly-ul ca sa poata lega clasa derivata. -->
     <Reference Include="0Harmony"><HintPath>$(Net6)\0Harmony.dll</HintPath><Private>false</Private></Reference>
+
+    <!-- Legarea de Il2CppInterop se face prin REFLECTIE, in NativeReceiver si in Materialise, si asta este
+         o alegere, nu o scapare: cine scrie modul nu il poate compila si nici rula, deci un nume legat
+         direct si scris gresit ar fi o eroare de compilare descoperita de altcineva, pe cand prin reflectie
+         este un motiv limpede intr-o coloana de rezultat. Referintele stau aici ca proiectul sa se lege
+         oricum de aceleasi fisiere pe care le are jocul. -->
     <Reference Include="Il2CppInterop.Runtime"><HintPath>$(Net6)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppInterop.Common"><HintPath>$(Net6)\Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
-    <Reference Include="Il2Cppmscorlib"><HintPath>$(Il2Cpp)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+
+    <!-- UnityEngine.CoreModule numai pentru Application.Quit: modul isi inchide jocul singur cand termina,
+         ca sesiunea urmatoare sa poata porni fara mana omului. -->
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(Il2Cpp)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
-    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(Il2Cpp)\UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
 </Project>

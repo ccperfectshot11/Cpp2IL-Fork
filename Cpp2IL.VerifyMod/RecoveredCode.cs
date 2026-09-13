@@ -10,16 +10,16 @@ namespace Cpp2IL.VerifyMod;
 /// <summary>
 /// Codul recuperat, incarcat in procesul JOCULUI.
 ///
-/// Pana acum cele doua parti nu s-au intalnit niciodata: faza 1 rula assembly-urile recuperate pe desktop,
-/// faza 2 rula metodele reale in joc, si singurul lucru care trecea granita era un hash. Substitutia cere
-/// ca ele sa stea in ACELASI proces, deci assembly-urile recuperate trebuie incarcate langa cele ale
-/// jocului fara sa se calce reciproc pe identitati.
+/// Cele doua implementari trebuie sa stea in ACELASI proces, fiindca numai asa pot primi exact aceleasi
+/// argumente: o comparatie intre doua procese nu poate trece granita decat cu un hash, si atunci nu se
+/// stie niciodata daca doua valori "identice" chiar au fost identice. Deci assembly-urile recuperate se
+/// incarca langa cele ale jocului, fara sa se calce reciproc pe identitati.
 ///
 /// De ce un context separat, si nu Assembly.LoadFrom: build-ul recuperat contine propriul mscorlib.dll,
 /// propriul UnityEngine.CoreModule.dll si asa mai departe, adica exact numele pe care le poarta si
 /// assembly-urile gazdei. Incarcate in contextul implicit, procesul ar avea doua System.Int32 si fiecare
 /// Invoke ar cadea cu o nepotrivire de argumente care se citeste exact ca o eroare in codul recuperat.
-/// Acelasi rationament si aceeasi lista ca in Cpp2IL.VerifyCheck/RecoveredAssemblyContext.cs - repetat
+/// Acelasi rationament si aceeasi lista ca in Cpp2IL.VerifyPlan/RecoveredContext.cs - repetat
 /// aici, nu referit, fiindca modul nu poate lua o dependinta pe unealta de desktop.
 /// </summary>
 internal sealed class RecoveredCode
@@ -73,7 +73,7 @@ internal sealed class RecoveredCode
     /// separat. Daca indexul ar fi construit DUPA ce s-a incarcat Assembly-CSharp recuperat, metoda
     /// "jocului" gasita dupa cheie ar putea fi chiar metoda recuperata - si atunci am compara codul
     /// recuperat cu el insusi, care este perfect de acord si nu inseamna nimic. Este exact capcana pe
-    /// care o ocoleste si faza 2 sarind assembly-urile "Cpp2IL.*", doar ca aici numele nu ne mai ajuta:
+    /// care o ocoleste si indexul jocului sarind assembly-urile "Cpp2IL.*", doar ca aici numele nu ne mai ajuta:
     /// assembly-ul recuperat se cheama chiar "Assembly-CSharp".
     /// </summary>
     public bool Owns(Assembly assembly) => assembly != null && _mine.Contains(assembly);
@@ -116,7 +116,7 @@ internal sealed class RecoveredCode
     }
 
     /// <summary>
-    /// Metodele unui assembly recuperat, indexate dupa ACEEASI cheie pe care o foloseste faza 2 pentru
+    /// Metodele unui assembly recuperat, indexate dupa ACEEASI cheie pe care o foloseste si indexul jocului pentru
     /// metodele jocului. Asta este tot ce face legatura dintre cele doua parti: nu tokenul, care este
     /// atribuit independent de Cpp2IL si de Il2CppInterop, ci numele normalizat plus forma semnaturii.
     /// </summary>
@@ -163,10 +163,23 @@ internal sealed class RecoveredCode
 
         foreach (var type in types)
         {
-            MethodInfo[] methods;
+            MethodBase[] methods;
             try
             {
-                methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
+                    | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+
+                // Si constructorii de instanta, nu numai metodele, si exact aceiasi pe care ii indexeaza si
+                // partea jocului. Un corp de constructor nu face aproape nimic altceva decat sa scrie
+                // campuri, iar campurile se citesc inapoi dupa apel - deci constructorii sunt printre cele
+                // mai bine masurabile tinte pe care le are unealta. Daca ar fi indexati doar de o parte,
+                // fiecare dintre ei ar cadea tacut ca "cheia nu mai este in indexul recuperat".
+                var declared = type.GetMethods(flags);
+                var constructors = type.GetConstructors(flags & ~BindingFlags.Static);
+
+                methods = new MethodBase[declared.Length + constructors.Length];
+                Array.Copy(declared, methods, declared.Length);
+                Array.Copy(constructors, 0, methods, declared.Length, constructors.Length);
             }
             catch (Exception)
             {

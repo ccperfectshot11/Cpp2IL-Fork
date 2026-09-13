@@ -1,19 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Multi-targeted on purpose. Phase 1 runs on net10 next to the other check tools; Phase 2 runs
-         inside the game as a MelonLoader mod, on the runtime Unity shipped. netstandard2.0 is the only
-         thing both can reference, and the whole point of this library is that ONE implementation of
-         input generation and signature hashing feeds both - two copies would drift and every diff
-         would then be a diff in the harness rather than in the recovered code. -->
-    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+    <!-- netstandard2.0 si atat. Doua programe foarte diferite consuma biblioteca asta - planificatorul de
+         pe disc, care ruleaza pe net6.0, si modul din joc, care ruleaza pe runtime-ul net6 al lui
+         MelonLoader - iar netstandard2.0 este numitorul lor comun. Rostul intregii biblioteci este ca
+         normalizarea cheilor, generarea valorilor si formatul retetelor sa aiba O SINGURA implementare:
+         doua copii ar aluneca una fata de alta, si atunci fiecare diferenta masurata ar fi o diferenta in
+         unealta, nu in codul recuperat. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>Cpp2IL.VerifyCore</AssemblyName>
     <RootNamespace>Cpp2IL.VerifyCore</RootNamespace>
-    <!-- No package references, deliberately: a MelonLoader mod that has to drag NuGet dependencies into
-         the game's Mods folder is a mod that will not be built. -->
+    <!-- Fara dependinte NuGet, dinadins: un mod MelonLoader care trebuie sa care pachete dupa el in
+         directorul Mods al jocului este un mod care nu ajunge sa fie pornit niciodata. -->
   </PropertyGroup>
 
 </Project>

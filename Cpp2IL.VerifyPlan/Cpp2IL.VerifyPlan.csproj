@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+
+    <!-- net6.0, si asta NU este o alegere de comoditate.
+         Unealta cere JIT-ului sa compileze fiecare corp recuperat si scrie pe disc ce a raspuns. Raspunsul
+         acela atarna de runtime-ul care il da: un corp care cere System.ThrowHelper din mscorlib trece sau
+         cade dupa cum arata BCL-ul gazdei. Harnasul ruleaza pe runtime-ul net6 al lui MelonLoader, deci
+         verdictul are valoare numai daca este dat tot de un net6. Pe masina asta exista
+         Microsoft.NETCore.App 6.0.36, deci unealta chiar poate rula acolo unde trebuie. -->
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Cpp2IL.VerifyPlan</AssemblyName>
+    <RootNamespace>Cpp2IL.VerifyPlan</RootNamespace>
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cpp2IL.VerifyCore\Cpp2IL.VerifyCore.csproj" />
+  </ItemGroup>
+
+</Project>
