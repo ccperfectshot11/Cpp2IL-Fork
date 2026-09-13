@@ -555,6 +555,56 @@ namespace ICSharpCode.Decompiler.Ast {
 				&& methodDef.DeclaringType.FullName == "System.TimeSpan";
 		}
 
+		// Campul intern System.Collections.Generic.List`1::_size, in spatele proprietatii publice Count:
+		// `public int Count => _size;`, fara nicio verificare in jur. Aceeasi forma de echivalenta ca la
+		// RuntimeTypeHandle::value.
+		//
+		// Spre deosebire de celelalte trei, tipul e generic, si asta schimba verificarea. DeclaringType
+		// al unei referinte de camp pe List<string> e un TypeSpec peste instantiere, al carui FullName
+		// este "System.Collections.Generic.List`1<System.String>" - deci o comparatie directa pe FullName
+		// n-ar prinde nimic. ScopeType da inapoi tipul generic deschis, care are nume stabil indiferent
+		// de argumentul de tip.
+		//
+		// Restrans intentionat la List<T>. Stack<T> si Queue<T> au si ele un camp `_size` in spatele lui
+		// Count, dar nu au fost cerute si nu le-am verificat; in exportul masurat sunt vreo zece locuri.
+		//
+		// Ca la celelalte, numai citirea: Count n-are setter. Scrierile raman pe camp, deci metodele in
+		// care il2cpp a inline-at List.Add tot nu vor compila - dar tocmai fiindca nu compila nu se poate
+		// strecura nicio diferenta de comportament din faptul ca citirile si scrierile ies acum pe cai
+		// diferite.
+		bool IsListSizeField(IField field)
+		{
+			if (field == null || field.Name != "_size")
+				return false;
+
+			var declaring = field.DeclaringType;
+			var scope = declaring == null ? null : declaring.ScopeType;
+			if (scope == null || scope.FullName != "System.Collections.Generic.List`1")
+				return false;
+
+			return field.FieldSig?.Type?.FullName == "System.Int32";
+		}
+
+		// Corpul lui get_Count este chiar `return this._size;` - aceeasi capcana de recursivitate.
+		bool CurrentMethodIsListGetCount()
+		{
+			return methodDef != null
+				&& methodDef.Name == "get_Count"
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == "System.Collections.Generic.List`1";
+		}
+
+		// Adnotarea corecta e PropertyDef-ul lui Count, cand tipul se rezolva. Cand nu se rezolva, lasam
+		// numai culoarea: WithAnnotation(null) arunca, si o adnotare de camp pe un membru care acum se
+		// numeste Count ar putea induce in eroare transformarile de mai tarziu.
+		PropertyDef FindListCountProperty(IField field)
+		{
+			var declaring = field == null ? null : field.DeclaringType;
+			var scope = declaring == null ? null : declaring.ScopeType;
+			var td = scope == null ? null : scope.ResolveTypeDef();
+			return td == null ? null : td.FindProperty("Count");
+		}
+
 		// il2cpp inline-eaza getterul System.RuntimeTypeHandle::get_Value, asa ca in codul recuperat ramane
 		// citirea directa a campului privat `value`. Cand exportul se recompileaza peste biblioteca standard
 		// reala, campul nu e vizibil si Roslyn da CS1061.
@@ -1077,6 +1127,13 @@ namespace ICSharpCode.Decompiler.Ast {
 						return arg1.Member("Value", BoxedTextColor.InstanceProperty).WithAnnotation(Create_RuntimeTypeHandle_get_Value());
 					if (IsTimeSpanTicksField(operand as IField) && !CurrentMethodIsTimeSpanGetTicks())
 						return arg1.Member("Ticks", BoxedTextColor.InstanceProperty).WithAnnotation(Create_TimeSpan_get_Ticks());
+					if (IsListSizeField(operand as IField) && !CurrentMethodIsListGetCount()) {
+						var countExpr = arg1.Member("Count", BoxedTextColor.InstanceProperty);
+						var countProp = FindListCountProperty((IField)operand);
+						if (countProp != null)
+							countExpr = countExpr.WithAnnotation(countProp);
+						return countExpr;
+					}
 					return arg1.Member(((IField) operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Ldsfld:
 					return AstBuilder.ConvertType(((IField)operand).DeclaringType, stringBuilder)
