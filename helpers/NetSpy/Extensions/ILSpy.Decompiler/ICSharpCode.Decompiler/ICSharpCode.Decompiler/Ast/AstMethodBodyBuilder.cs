@@ -537,6 +537,89 @@ namespace ICSharpCode.Decompiler.Ast {
 				&& methodDef.DeclaringType.FullName == "System.RuntimeTypeHandle";
 		}
 
+		// Generatorul de legaturi al Unity scrie fiecare proprietate care trece o structura peste granita
+		// nativa in trei bucati: proprietatea publica si doua metode private de marsalare.
+		//
+		//     public Vector3 position {
+		//         get { get_position_Injected(out var ret); return ret; }
+		//         set { set_position_Injected(ref value); }
+		//     }
+		//     private extern void get_position_Injected(out Vector3 ret);
+		//     private extern void set_position_Injected(ref Vector3 value);
+		//
+		// il2cpp inline-eaza accesorul, asa ca in codul recuperat ramane apelul direct la metoda privata.
+		// Echivalenta nu e ghicita, e chiar definitia proprietatii: `t.get_position_Injected(ref v)` este
+		// `v = t.position`, iar `t.set_position_Injected(ref v)` este `t.position = v`.
+		//
+		// Fara regula asta, cele doua forme ies diferit, dar amandoua gresit. Getterul iese ca apel si da
+		// CS1061. Seterul pacaleste euristica pe nume de mai jos - GetMethodSemanticsAttributes vede
+		// prefixul "set_" si il crede accesor - si iese ca `t.position_Injected = ref v`, care pe langa
+		// CS1061 nu e nici macar sintaxa valida.
+		//
+		// Ce NU prinde regula, intentionat:
+		//  - metodele obisnuite marsalate (TransformPoint_Injected, LookRotation_Injected, TRS_Injected).
+		//    Nu au prefix get_/set_, deci nu intra. Acolo ordinea si numarul argumentelor difera de la caz
+		//    la caz si nu exista o forma unica pe care sa o putem demonstra.
+		//  - orice alt numar de argumente decat unul singur. In exportul masurat, toate cele 586 de apeluri
+		//    `get_*_Injected(` au exact un argument, si nici unul nu contine virgula.
+		//  - argumentul care nu e `ref`/`out`. Forma dovedita e cea cu adresa; pe alta nu ne pronuntam.
+		//  - metodele care chiar sunt accesori declarati (SemanticsAttributes), adica au in spate o
+		//    proprietate care se cheama ea insasi `X_Injected`. Nu se intampla la Unity, dar daca s-ar
+		//    intampla, redenumirea ar fi o minciuna.
+		//  - cazul in care tipul se rezolva si nu are proprietatea cautata: atunci premisa e falsa si
+		//    rescrierea ar fabrica o eroare noua in loc sa stearga una.
+		AstNode TransformUnityInjectedAccessor(IMethod method, MethodDef resolvedMethod, Expression target, List<Ast.Expression> methodArgs)
+		{
+			if (methodArgs.Count != 1 || method == null)
+				return null;
+
+			// Un accesor adevarat isi pastreaza numele; numai o metoda simpla poate fi marsalarea.
+			if (resolvedMethod != null && resolvedMethod.SemanticsAttributes != MethodSemanticsAttributes.None)
+				return null;
+
+			string name = method.Name;
+			const string suffix = "_Injected";
+			if (name == null || !name.EndsWith(suffix, StringComparison.Ordinal))
+				return null;
+
+			bool isGetter = name.StartsWith("get_", StringComparison.Ordinal);
+			if (!isGetter && !name.StartsWith("set_", StringComparison.Ordinal))
+				return null;
+
+			string propName = name.Substring(4, name.Length - 4 - suffix.Length);
+			if (propName.Length == 0)
+				return null;
+
+			// Numai forma cu adresa e cea dovedita.
+			var direction = methodArgs[0] as DirectionExpression;
+			if (direction == null)
+				return null;
+
+			var declaringTypeDef = method.DeclaringType == null ? null : method.DeclaringType.ResolveTypeDef();
+			PropertyDef prop = declaringTypeDef == null ? null : declaringTypeDef.FindProperty(propName);
+			if (declaringTypeDef != null && prop == null)
+				return null;
+
+			// Corpul accesorului public este chiar apelul pe care il rescriem. Daca l-am rescrie si acolo,
+			// proprietatea s-ar chema pe sine: recursivitate infinita in loc de eroare de compilare. In
+			// lantul de fata se decompileaza doar ansamblurile jocului, nu si UnityEngine recuperat, deci
+			// cazul nu apare azi; garda exista ca sa nu depinda corectitudinea de asta.
+			if (this.methodDef != null
+				&& (this.methodDef.Name == "get_" + propName || this.methodDef.Name == "set_" + propName)
+				&& this.methodDef.DeclaringType != null
+				&& method.DeclaringType != null
+				&& this.methodDef.DeclaringType.FullName == method.DeclaringType.FullName)
+				return null;
+
+			var value = UnpackDirectionExpression(direction);
+			object annotation = prop != null ? (object)prop : method;
+			var access = target.Member(propName, annotation).WithAnnotation(annotation);
+
+			return isGetter
+				? new AssignmentExpression(value, access)
+				: new AssignmentExpression(access, value);
+		}
+
 		object GetParameterColor(ILVariable ilv)
 		{
 			if (valueParameterIsKeyword && ilv.OriginalParameter?.Name == "value" && methodDef.Parameters.Count > 0 && methodDef.Parameters[methodDef.Parameters.Count - 1] == ilv.OriginalParameter)
@@ -1330,6 +1413,16 @@ namespace ICSharpCode.Decompiler.Ast {
 				return target.Indexer(methodArgs);
 			} else if (method.Name == "Set" && (method.DeclaringType.TryGetArraySig() != null || method.DeclaringType.TryGetSZArraySig() != null) && methodArgs.Count > 2) {
 				return new AssignmentExpression(target.Indexer(methodArgs.GetRange(0, methodArgs.Count - 1)), methodArgs.Last());
+			}
+
+			// Accesorii marsalati ai Unity se rezolva inaintea testului de accesor de mai jos, fiindca
+			// euristica pe nume de acolo ia prefixul "set_" drept accesor si strica tocmai forma pe care o
+			// reparam aici. Cand forceSemAttr e dat, apelul vine de la CallReadOnlySetter, adica de la un
+			// accesor pe care chiar decompilatorul l-a sintetizat - acolo nu avem ce cauta.
+			if (forceSemAttr == null) {
+				var injectedAccessor = TransformUnityInjectedAccessor(method, methodDef, target, methodArgs);
+				if (injectedAccessor != null)
+					return injectedAccessor;
 			}
 
 			// Test whether the method is an accessor:
