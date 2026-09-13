@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.Model.Contexts;
 
@@ -7,6 +8,14 @@ namespace Cpp2IL.Core.Analysis;
 public static class GenericInstanceFieldLayout
 {
     public static FieldAnalysisContext? FindFieldAtOffset(TypeAnalysisContext definition, long targetOffset)
+        => FindFieldAtOffset(definition, targetOffset, null);
+
+    /// <summary>
+    /// <paramref name="genericArguments"/> sunt argumentele instantei careia i se calculeaza asezarea.
+    /// Cand sunt date, un camp de tipul unui parametru generic este masurat dupa argumentul ADEVARAT, nu
+    /// presupus de marimea unui pointer. Cand lipsesc - tipul e deschis - se pastreaza presupunerea veche.
+    /// </summary>
+    public static FieldAnalysisContext? FindFieldAtOffset(TypeAnalysisContext definition, long targetOffset, IReadOnlyList<TypeAnalysisContext>? genericArguments)
     {
         var pointerSize = definition.AppContext.Binary.PointerSizeBytes;
 
@@ -22,7 +31,7 @@ public static class GenericInstanceFieldLayout
             if (field.IsStatic)
                 continue;
 
-            if (GetSizeAndAlignment(field.FieldType, pointerSize) is not var (size, alignment))
+            if (GetSizeAndAlignment(Substitute(field.FieldType, genericArguments), pointerSize) is not var (size, alignment))
                 return null;
 
             offset = (offset + alignment - 1) & ~(alignment - 1);
@@ -35,6 +44,19 @@ public static class GenericInstanceFieldLayout
 
         return null;
     }
+
+    /// <summary>
+    /// Inlocuieste un camp de tipul `T` cu argumentul adevarat. Numai parametrul gol se inlocuieste: un
+    /// `T[]` este oricum o referinta, deci are marimea unui pointer indiferent de argument, iar o instanta
+    /// generica imbricata care il pomeneste pe T ramane neatinsa si cade singura in bail-ul de mai jos,
+    /// fiindca nu e in tabelul de marimi cunoscute. Asa nimic nu se ghiceste.
+    /// </summary>
+    private static TypeAnalysisContext Substitute(TypeAnalysisContext fieldType, IReadOnlyList<TypeAnalysisContext>? genericArguments)
+        => genericArguments != null
+            && fieldType is GenericParameterTypeAnalysisContext { Index: var index }
+            && index >= 0 && index < genericArguments.Count
+            ? genericArguments[index]
+            : fieldType;
 
     private static (long Size, long Alignment)? GetSizeAndAlignment(TypeAnalysisContext fieldType, int pointerSize)
     {

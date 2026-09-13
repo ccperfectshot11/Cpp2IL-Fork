@@ -310,7 +310,7 @@ public static class MetadataResolver
                 // Only where the metadata really is boxed-relative. Where it is not - see
                 // RawNestedOffsets - a byref points at the value itself and the offsets already agree,
                 // so adding the header would walk past the field the instruction named.
-                var searchAddend = byRefStruct != null && !RawNestedOffsets
+                var searchAddend = byRefStruct != null && !RawNestedOffsets && !ByRefRawOffsets
                     ? memory.Addend + ValueTypeHeaderSize
                     : memory.Addend;
 
@@ -320,15 +320,29 @@ public static class MetadataResolver
                 FieldAnalysisContext? field;
                 if (genericOwner != null && staticOwner == null)
                 {
-                    // metadata has all-0 offsets for generic definitions, so recompute layout
-                    // TODO support user-defined value types
-                    if (genericOwner.GenericArguments.Any(a => a.IsValueType))
+                    // metadata has all-0 offsets for generic definitions, so recompute layout.
+                    //
+                    // Pana acum se sarea din start cand ORICE argument era tip valoare, fiindca un camp de
+                    // tipul lui `T` era masurat ca pointer, ceea ce e gresit pentru o structura. Garda era
+                    // insa mult mai larga decat cauza: asezarea lui `List<T>` nu depinde deloc de T, avand
+                    // `T[] _items` (o referinta, deci tot un pointer), `int _size`, `int _version` si
+                    // `object _syncRoot`. Numarat pe cele 150 de dll-uri, 1.803 marcaje au baza o instanta
+                    // generica al carei aranjament nu depinde de argument, si cele mai multe sunt List.
+                    //
+                    // Acum argumentele adevarate se trimit in calcul: un camp `T` se masoara dupa argumentul
+                    // lui, iar daca acela e o structura definita de utilizator, careia nu ii stim marimea,
+                    // GetSizeAndAlignment intoarce null si se iese exact ca pana acum. Se castiga deci numai
+                    // acolo unde marimea chiar este cunoscuta.
+                    field = GenericInstanceFieldLayout.FindFieldAtOffset(genericOwner.GenericType, memory.Addend, genericOwner.GenericArguments);
+
+                    // Cand calculul nu a reusit si un argument e tip valoare, se pastreaza iesirea de
+                    // dinainte. Nu se coboara in campuri imbricate: ofseturile definitiei generice sunt
+                    // toate 0, deci coborarea ar "potrivi" primul camp orice ofset i s-ar da.
+                    if (field == null && genericOwner.GenericArguments.Any(a => a.IsValueType))
                     {
                         FieldDiag.GenericVtSkip();
                         continue;
                     }
-
-                    field = GenericInstanceFieldLayout.FindFieldAtOffset(genericOwner.GenericType, memory.Addend);
                 }
                 else if (staticOwner == null && owner.GenericParameters.Count > 0)
                 {
@@ -982,6 +996,23 @@ public static class MetadataResolver
     // in campul care incepe structura pe calea de CITIRE, adica oglinda a ceea ce ScalarFieldStore face
     // deja pentru scriere. Pana atunci logica recuperata nu se plateste, fiindca nu compileaza.
     private static readonly bool RawNestedOffsets = System.Environment.GetEnvironmentVariable("CPP2IL_NESTED_RAW") == "1";
+
+    /// <summary>
+    /// Scoate antetul din cautarea pe baze byref, FARA sa atinga coborarea in campuri imbricate. Oprit
+    /// implicit, deci nu schimba nimic pana nu se cere anume: CPP2IL_BYREF_RAW=1.
+    /// </summary>
+    /// <remarks>
+    /// Exista ca sa se poata masura separat. CPP2IL_NESTED_RAW le schimba pe amandoua deodata, iar
+    /// masuratoarea de -111 metode STRICT le-a amestecat, desi sunt doua lucruri diferite.
+    ///
+    /// Dovada ca deplasarea e gresita pe byref, numarata pe cele 150 de dll-uri: dintre marcajele cu baza
+    /// `Tip&amp;`, 311 s-ar lega de un camp cu ofsetul BRUT si numai 8 cu ofsetul deplasat cu 0x10. Formele
+    /// sunt si ele limpezi - `UnityEngine.Vector3&amp;+0x8` este `z`, iar Vector3 are 12 octeti, deci cu
+    /// antetul adaugat s-ar cauta ofsetul 0x18, dincolo de structura. Tabela de campuri spune acelasi
+    /// lucru mai general: pe 1.780 de structuri primul camp incepe la 0x0, in timp ce pe 2.875 de clase
+    /// incepe la 0x10. Ofsetul unei clase poarta deja antetul; al unei structuri nu.
+    /// </remarks>
+    private static readonly bool ByRefRawOffsets = System.Environment.GetEnvironmentVariable("CPP2IL_BYREF_RAW") == "1";
 
     /// <summary>
     /// Resolves an offset that does not name a field directly but falls inside a value-type field,
