@@ -36,6 +36,17 @@ public class PublicizerProcessingLayer : Cpp2IlProcessingLayer
         {
             foreach (var type in assembly.Types)
             {
+                // Tipurile pe care compilatorul le tese singur in assembly raman cum sunt. Roslyn le
+                // verifica forma cand le intalneste, iar prima cerinta din lista este sa fie INTERNAL:
+                // "The type 'Microsoft.CodeAnalysis.EmbeddedAttribute' must be non-generic, internal,
+                // non-file, sealed, non-static, have a parameterless constructor, inherit from
+                // System.Attribute" (CS9271). Largite la public, ele opresc compilarea inaintea oricarui
+                // corp de metoda - masurat, o singura eroare de felul asta a ascuns tot restul codului.
+                // Nu au ce cauta oricum in largire: nimeni nu le cheama din alt assembly, sunt marcaje
+                // pentru compilator.
+                if (IsCompilerEmbedded(type))
+                    continue;
+
                 type.OverrideAttributes = Publicize(type.Attributes);
 
                 foreach (var method in type.Methods)
@@ -54,6 +65,18 @@ public class PublicizerProcessingLayer : Cpp2IlProcessingLayer
             progressCallback?.Invoke(++done, appContext.Assemblies.Count);
         }
     }
+
+    // Numele sunt fixate de compilator, nu de noi, deci se pot compara literal. Lista e scurta si inchisa
+    // intentionat: sunt exact tipurile pe care Roslyn le recunoaste dupa nume complet si le verifica forma.
+    private static bool IsCompilerEmbedded(TypeAnalysisContext type) => type.Namespace switch
+    {
+        "Microsoft.CodeAnalysis" => type.Name is "EmbeddedAttribute",
+        "System.Runtime.CompilerServices" => type.Name is "IsReadOnlyAttribute" or "IsUnmanagedAttribute"
+            or "IsByRefLikeAttribute" or "NullableAttribute" or "NullableContextAttribute"
+            or "NullablePublicOnlyAttribute" or "RefSafetyRulesAttribute" or "ScopedRefAttribute"
+            or "RequiresLocationAttribute" or "NativeIntegerAttribute",
+        _ => false,
+    };
 
     // Visibility for a nested type is a different set of flags to a top-level one, and using the wrong one
     // produces metadata that is not just wrong but unloadable.
