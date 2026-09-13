@@ -54,6 +54,12 @@ public sealed class IL2CppManager : BaseManager
 		// exportat: codul recuperat pastreaza accesele pe care il2cpp le-a inline-at peste granita de
 		// accesibilitate, dar C#-ul nu are voie sa le scrie. Masurat: 8.140 de erori de felul asta,
 		// din care 1.916 numai pe EntityRef.Raw.
+		//
+		// Acopera NUMAI ansamblurile jocului, adica pe cele care ajung in Assets/Plugins. Nu poate
+		// repara accesele la campuri private din corlib sau din UnityEngine (RuntimeTypeHandle.value,
+		// List<T>._size, Transform.get_position_Injected): exportul nu se compileaza fata de versiunile
+		// recuperate ale acelor ansambluri, fiindca Unity le da pe ale lui. Alea se repara in
+		// decompilator, la rezolvarea membrului.
 		new PublicizerProcessingLayer(),
 		new MethodOverrideNameFixer(),
 	];
