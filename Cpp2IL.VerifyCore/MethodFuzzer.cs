@@ -400,12 +400,17 @@ public static class MethodFuzzer
 public static class MethodKeys
 {
     /// <summary>
-    /// Forma cheii, ca sa se vada din afara ca un fisier scris mai demult nu mai este citibil. Se schimba
-    /// ODATA CU orice regula de normalizare care muta cheile: cine tine chei pe disc - dump-ul de cerinte
-    /// al fazei 4, fisierele de semnaturi ale fazei 1 - le compara cu semnul asta si le reface, in loc sa
-    /// porneasca jocul degeaba peste chei care nu se mai potrivesc cu nimic.
+    /// Forma cheii SI a ce se scrie despre ea, ca sa se vada din afara ca un fisier scris mai demult nu
+    /// mai este citibil. Se schimba odata cu orice regula de normalizare care muta cheile, si odata cu
+    /// orice camp nou pe care dump-ul il scrie despre o cheie: cine tine chei pe disc - dump-ul de
+    /// cerinte al fazei 4, fisierele de semnaturi ale fazei 1 - le compara cu semnul asta si le reface,
+    /// in loc sa porneasca jocul degeaba peste un fisier care nu mai raspunde la intrebarea pusa.
+    ///
+    /// -2: dump-ul deosebeste acum "cheia nu exista in indexul jocului" de "cheia a iesit din pereche
+    ///     fiindca doua metode diferite ale jocului au cazut pe ea". Cheile insele nu s-au mutat fata
+    ///     de -1, dar raspunsul la "cat ne costa ciocnirile" se citeste numai dintr-un dump nou.
     /// </summary>
-    public const string FormatVersion = "w23-mangle-1";
+    public const string FormatVersion = "w23-mangle-2";
 
     public static string For(MethodBase method)
     {
