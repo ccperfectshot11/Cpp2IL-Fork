@@ -45,6 +45,9 @@
     <!-- UnityEngine.CoreModule numai pentru Application.Quit: modul isi inchide jocul singur cand termina,
          ca sesiunea urmatoare sa poata porni fara mana omului. -->
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(Il2Cpp)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <!-- UnityEngine.Application.Quit() are Il2CppSystem.Object in semnatura, deci compilatorul cere
+         assembly-ul unde e definit, chiar daca noi nu-l numim nicaieri. -->
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(Il2Cpp)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
 </Project>
