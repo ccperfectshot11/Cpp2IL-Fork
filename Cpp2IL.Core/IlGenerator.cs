@@ -153,7 +153,7 @@ public static class IlGenerator
         var helpersType = appContext.InjectTypeIntoSharedAssembly(
             HelpersNamespace,
             HelpersTypeName,
-            null,
+            appContext.SystemTypes.SystemObjectType,
             TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Abstract | TypeAttributes.Sealed);
 
         helpersType.InjectMethodToAllAssemblies(
