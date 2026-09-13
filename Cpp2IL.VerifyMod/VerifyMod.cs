@@ -356,7 +356,7 @@ public class VerifyMod : MelonMod
     {
         var index = new Dictionary<string, MethodBase>(StringComparer.Ordinal);
 
-        ResetCollisions();
+        KeyCollisions.Reset();
         LoadEveryInteropAssembly();
 
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
@@ -387,8 +387,12 @@ public class VerifyMod : MelonMod
                 IndexType(type, index);
         }
 
-        if (Collided.Count > 0)
-            LoggerInstance.Warning($"{Collided.Count} chei ale jocului au cazut pe cate doua metode diferite si au fost scoase din pereche.");
+        if (KeyCollisions.Count > 0)
+        {
+            LoggerInstance.Warning($"{KeyCollisions.Count} chei ale jocului au cazut pe cate doua metode diferite si au fost scoase din pereche.");
+            LoggerInstance.Warning("  " + KeyCollisions.Summary());
+            KeyCollisions.WriteSamples(Path.Combine(_directory, "active-key-collisions.txt"), message => LoggerInstance.Msg(message));
+        }
 
         return index;
     }
@@ -406,6 +410,11 @@ public class VerifyMod : MelonMod
     private void LoadEveryInteropAssembly()
     {
         var directory = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "Il2CppAssemblies");
+
+        // Retinut inainte de orice verificare: impartirea ciocnirilor are nevoie sa stie care assembly
+        // este proiectia jocului si care este un assembly .NET adevarat al gazdei, iar singurul lucru
+        // care le deosebeste sigur este directorul din care au fost incarcate.
+        KeyCollisions.InteropDirectory = directory;
 
         if (!Directory.Exists(directory))
         {
@@ -524,15 +533,6 @@ public class VerifyMod : MelonMod
             IndexMember(index, constructor);
     }
 
-    /// <summary>
-    /// Cheile pe care au cazut doua metode DIFERITE ale jocului. Se tin separat fiindca o cheie ciocnita
-    /// nu se repara ignorand a doua venita: prima a intrat deja in index si ar ramane acolo drept
-    /// pereche a ceva ce nu i se cuvine.
-    /// </summary>
-    private static readonly HashSet<string> Collided = new HashSet<string>(StringComparer.Ordinal);
-
-    private static void ResetCollisions() => Collided.Clear();
-
     private static void IndexMember(Dictionary<string, MethodBase> index, MethodBase method)
     {
         if (method.IsGenericMethodDefinition || method.ContainsGenericParameters)
@@ -557,7 +557,7 @@ public class VerifyMod : MelonMod
         // la fel" mincinos, fie, mult mai rau, un "se comporta la fel" mincinos. O cheie lipsa se vede
         // in dump ca "cheia nu exista in indexul jocului" si se poate numara; o pereche gresita nu se
         // vede nicaieri.
-        if (Collided.Contains(key))
+        if (KeyCollisions.Contains(key))
             return;
 
         if (index.TryGetValue(key, out var already))
@@ -569,10 +569,143 @@ public class VerifyMod : MelonMod
                 return;
 
             index.Remove(key);
-            Collided.Add(key);
+            KeyCollisions.Record(key, already, method);
             return;
         }
 
         index[key] = method;
+    }
+}
+
+/// <summary>
+/// Cheile pe care au cazut doua metode DIFERITE ale jocului, si din ce fel de suprapunere au iesit.
+///
+/// Se tin separat de index fiindca o cheie ciocnita nu se repara ignorand a doua venita: prima a intrat
+/// deja in index si ar ramane acolo drept pereche a ceva ce nu i se cuvine. Dar numarul gol nu spune
+/// nimic singur - 12.041 de ciocniri inseamna cu totul altceva daca vin dintr-un singur assembly decat
+/// daca vin din suprapunerea dintre proiectia jocului si runtime-ul .NET adevarat. De aceea fiecare
+/// ciocnire este si CLASIFICATA:
+///
+///  - acelasi assembly: doua metode ale aceluiasi cod nu se mai deosebesc dupa normalizare. NUMAI astea
+///    pun sub semnul intrebarii o regula de normalizare, fiindca numai aici normalizarea a pierdut o
+///    deosebire adevarata.
+///  - interop contra gazda: tipul proiectat al jocului si tipul .NET adevarat cu acelasi nume -
+///    Il2CppSystem.String si System.String ajung amandoua "System.String". Suprapunerea asta este CERUTA
+///    de schema, fiindca exact de aceea se taie prefixul Il2Cpp, si exista de dinainte de orice
+///    stalcire; pana acum "prima castiga" o rezolva dand cu banul, ceea ce inseamna ca jumatate din
+///    cazuri se legau de metoda .NET in loc de cea a jocului.
+///  - assembly-uri diferite: doua proiectii diferite, sau doua assembly-uri ale gazdei.
+/// </summary>
+internal static class KeyCollisions
+{
+    // Cate exemple se scriu pe disc. Destule cat sa se vada tiparul, putine cat sa nu coste nimic langa
+    // un joc care foloseste deja cea mai mare parte din cei 16 GB.
+    private const int SampleLimit = 200;
+
+    private static readonly HashSet<string> Keys = new HashSet<string>(StringComparer.Ordinal);
+    private static readonly List<string> Samples = new List<string>();
+
+    private static int _sameAssembly;
+    private static int _interopVsHost;
+    private static int _otherCross;
+
+    /// <summary>Directorul din care se incarca proiectiile Il2CppInterop. Gol cand nu se stie.</summary>
+    public static string InteropDirectory { get; set; }
+
+    public static int Count => Keys.Count;
+
+    public static bool Contains(string key) => Keys.Contains(key);
+
+    public static void Reset()
+    {
+        Keys.Clear();
+        Samples.Clear();
+        _sameAssembly = 0;
+        _interopVsHost = 0;
+        _otherCross = 0;
+    }
+
+    public static void Record(string key, MethodBase first, MethodBase second)
+    {
+        Keys.Add(key);
+
+        var left = first.DeclaringType?.Assembly;
+        var right = second.DeclaringType?.Assembly;
+
+        string bucket;
+        if (ReferenceEquals(left, right))
+        {
+            _sameAssembly++;
+            bucket = "acelasi-assembly";
+        }
+        else if (IsInterop(left) != IsInterop(right))
+        {
+            _interopVsHost++;
+            bucket = "interop-contra-gazda";
+        }
+        else
+        {
+            _otherCross++;
+            bucket = "assembly-uri-diferite";
+        }
+
+        if (Samples.Count < SampleLimit)
+            Samples.Add(bucket + "\t" + key + "\t" + Where(first) + "\t" + Where(second));
+    }
+
+    public static string Summary() =>
+        "acelasi assembly: " + _sameAssembly +
+        " | interop contra gazda: " + _interopVsHost +
+        " | assembly-uri diferite: " + _otherCross;
+
+    public static void WriteSamples(string path, Action<string> log)
+    {
+        try
+        {
+            var lines = new List<string> { "categorie\tcheie\tprima\ta doua" };
+            lines.AddRange(Samples);
+            File.WriteAllLines(path, lines);
+            log("  primele " + Samples.Count + " ciocniri scrise in " + Path.GetFileName(path));
+        }
+        catch (Exception)
+        {
+            // Un fisier de diagnostic care nu se poate scrie nu are voie sa opreasca indexarea.
+        }
+    }
+
+    private static string Where(MethodBase method)
+    {
+        var type = method.DeclaringType;
+        var assembly = type?.Assembly.GetName().Name ?? "?";
+        return assembly + ":" + (type?.FullName ?? "?") + "::" + method.Name;
+    }
+
+    private static bool IsInterop(Assembly assembly)
+    {
+        if (assembly == null || string.IsNullOrEmpty(InteropDirectory))
+            return false;
+
+        string location;
+        try
+        {
+            location = assembly.Location;
+        }
+        catch (Exception)
+        {
+            // Un assembly incarcat din memorie nu are fisier, deci nu este o proiectie de pe disc.
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(location))
+            return false;
+
+        var directory = Path.GetDirectoryName(location);
+        if (directory == null)
+            return false;
+
+        return string.Equals(
+            directory.TrimEnd('\\', '/'),
+            InteropDirectory.TrimEnd('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
     }
 }

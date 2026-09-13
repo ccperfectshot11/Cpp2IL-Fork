@@ -135,7 +135,7 @@ internal static class MethodRequirements
     /// care reflectia refuza sa il descrie este el insusi un rezultat si trebuie sa ajunga in fisier ca
     /// atare, nu sa opreasca dump-ul cu treizeci de mii de randuri inainte de final.
     /// </summary>
-    public static MethodRequirement Describe(string assembly, MethodBase recovered, MethodBase game, bool safetyOn)
+    public static MethodRequirement Describe(string assembly, MethodBase recovered, MethodBase game, bool safetyOn, bool keyCollided = false)
     {
         var requirement = new MethodRequirement
         {
@@ -188,7 +188,15 @@ internal static class MethodRequirements
         if (recovered.IsConstructor && recovered.IsStatic)
             blockers.Add("constructor static - nu se cheama direct");
 
-        if (game == null)
+        // Cele doua feluri de "nu am pereche" se numara separat fiindca se repara altfel. "Nu exista"
+        // inseamna ca normalizarea inca nu ajunge la forma jocului si se poate castiga cu o regula noua.
+        // "A iesit din pereche" inseamna ca forma a ajuns PREA departe: doua metode diferite ale jocului
+        // au cazut pe aceeasi cheie si niciuna nu mai poate fi aleasa fara sa dam cu banul. Numarul
+        // acesta este singurul care spune cat ne costa ciocnirile IN SCOPUL NOSTRU - restul ciocnirilor
+        // sunt pe chei pe care codul recuperat nu le cere niciodata.
+        if (game == null && keyCollided)
+            blockers.Add("cheia a iesit din pereche - doua metode diferite ale jocului au cazut pe ea");
+        else if (game == null)
             blockers.Add("cheia nu exista in indexul jocului - nu exista cu ce compara");
 
         if (safetyOn && !SubstSafety.MayTouch(assembly, requirement.Type))

@@ -331,7 +331,7 @@ internal static class ActiveSweep
                     MethodRequirement requirement;
                     try
                     {
-                        requirement = MethodRequirements.Describe(name, pair.Value, game, _safety);
+                        requirement = MethodRequirements.Describe(name, pair.Value, game, _safety, KeyCollisions.Contains(pair.Key));
                     }
                     catch (Exception)
                     {
