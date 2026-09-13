@@ -1,8 +1,22 @@
 using System;
 using System.Collections.Generic;
 
-namespace Cpp2IL.VerifyMod;
+namespace Cpp2IL.VerifyCore;
 
+// Lista de siguranta si impartirea universului, MUTATE aici din Cpp2IL.VerifyMod fara nicio schimbare de
+// continut: fragmentele, prefixele si numerele masurate din comentarii sunt cele de dinainte, litera cu
+// litera.
+//
+// De ce s-au mutat. Acum exista doua unelte care trebuie sa fie de acord asupra a ce nu se atinge:
+// planificatorul de pe disc, care hotaraste ce intra in lista de lucru, si harnasul din joc, care o
+// executa. Doua copii ale acelorasi liste ar putea ajunge sa difere dupa o singura editare neatenta, iar
+// urmarea ar fi o metoda de plati sau de cont lasata in lista de o parte si chemata de cealalta. O
+// singura definitie, folosita de amandoua, face nepotrivirea imposibila.
+//
+// Ce NU s-a mutat: SubstSafety.MaySubstitute si lista NeverSubstitute de langa ea. Acelea spuneau ce
+// raspuns nu se scrie inapoi in joc, iar acum nu se mai scrie NICIUN raspuns inapoi in joc - se cheama
+// ambele implementari si se compara ce au intors. O lista care raspunde la o intrebare pe care nimeni nu
+// o mai pune ar fi doar cod mort care arata a plasa de siguranta.
 /// <summary>
 /// De care parte cade un assembly: cod scris de EI, biblioteca publica luata de-a gata, sau modul pe
 /// care Cpp2IL il inlocuieste cu cioturi.
@@ -17,7 +31,7 @@ namespace Cpp2IL.VerifyMod;
 /// estimate: cod propriu 58.972 de metode in 54 de assembly-uri, biblioteci publice 11.519, transport
 /// de retea public 1.318, plati 17.
 /// </summary>
-internal enum AssemblyClass
+public enum AssemblyClass
 {
     /// <summary>Codul lor sau al furnizorilor lor. Se masoara.</summary>
     InHouse = 0,
@@ -29,7 +43,7 @@ internal enum AssemblyClass
     Stubbed = 2,
 }
 
-internal static class TargetUniverse
+public static class TargetUniverse
 {
     /// <summary>
     /// Cioturile. Aceeasi lista ca Selector.IsStubbedModule, ca AsmResolverDllOutputFormatIlRecovery si
@@ -204,4 +218,123 @@ internal static class TargetUniverse
 
         return set;
     }
+}
+
+/// <summary>
+/// Ce nu se atinge, si de ce.
+///
+/// Harnasul CHEAMA metodele jocului inauntrul unui joc conectat la serverele lui. Un apel intr-un loc
+/// obisnuit inseamna un pixel prost desenat; acelasi apel in codul de cont, de plata, de antifrauda sau
+/// de telemetrie inseamna date stricate, o cerere trimisa in afara sau un cont sanctionat, si asta nu se
+/// poate lua inapoi cu o repornire. Numele listei a ramas cel de dinainte anume, ca notele si rapoartele
+/// vechi sa se poata cauta mai departe dupa el. Lista nu este ghicita: numele vin din chiar universul
+/// recensamantului (81 de assembly-uri, 71.826 de metode) si din spatiile de nume ale Assembly-CSharp.
+/// </summary>
+public static class SubstSafety
+{
+    // Nici macar citite. Harnasul citeste campuri de pe receptorul pe care il fabrica el, dar tot el
+    // cheama si metode ale jocului, iar un getter nativ de retea sau de plata poate face mult mai mult
+    // decat sa intoarca un camp.
+    private static readonly string[] NeverTouch =
+    {
+        // transport si sesiune de retea
+        "Photon3Unity3D", "PhotonRealtime", "LiteNetLib", "SuperSocket.ClientEngine", "PusherClient",
+        "WebSocketDotNet", "MessagePack", "Mono.Security",
+        // cont, magazin, atribuire, telemetrie, antifrauda
+        "BackboneUnity", "Firebase.", "Facebook.Unity", "GooglePlayGames",
+        "AppleAuth", "com.rlabrecque.steamworks.net", "BugsnagUnity",
+    };
+
+    private static readonly string[] NeverTouchNamespaces =
+    {
+        "Stumble.Login", "Stumble.LocalUsers", "Stumble.Currencies", "Stumble.Matchmaking",
+        "Stumble.PhotonRegions", "Stumble.DeepLinking", "Shop.", "ScopelyAccount.", "Analytics.",
+        "Datadog.", "BattlePass.", "Rewards.", "Stumble.InAppMessaging", "Stumble.LootBox",
+        // Gasita numarand candidatii, nu ghicita: Pusher.PusherManager sta in Assembly-CSharp, deci
+        // filtrul pe assembly pentru "PusherClient" nu o prindea. Este canalul de mesaje in timp real.
+        "Pusher.",
+    };
+
+    /// <summary>
+    /// Fragmente de NUME de tip, nu de namespace.
+    ///
+    /// Filtrul pe namespace nu ajunge: masurat pe build-ul recuperat, 1.597 din tipurile lui
+    /// Assembly-CSharp stau in namespace-ul global - AdManager, AppleLoginManager, BackboneIntegration,
+    /// BannedPopupHelper, ConsentFlow, FriendsListNetworkController - si niciun prefix de namespace nu le
+    /// atinge. Lista este DELIBERAT prea larga - "Store" prinde si ce doar seamana a magazin - si costa,
+    /// masurat, 499 candidati din 7.148. Cand alegerea este intre a masura cu cinci sute de metode mai
+    /// putin si a atinge codul de cont, de plata sau de sanctionare al unui joc conectat la serverele lui,
+    /// pretul asta se plateste fara discutie.
+    /// </summary>
+    private static readonly string[] NeverTouchTypeFragments =
+    {
+        "Purchase", "IAP", "Store", "Shop", "Wallet", "Payment", "Receipt", "Subscription", "Currency",
+        "Login", "Account", "Auth", "Consent", "Privacy", "Banned",
+        "Backbone", "Analytics", "Telemetry", "Firebase", "Pusher", "Http", "Network", "Socket",
+        "Session", "Token", "Server", "Friends", "Social", "Leaderboard", "Tournament",
+        // Reclamele au nevoie de fragmente intregi, nu de "Ad": potrivirea se face pe subsir, iar "Ad"
+        // ar prinde Shadow, Loader, Header si Gradient - adica exact codul de desen pe care vrem sa-l
+        // masuram. Masurat pe out_w13on: cu fragmentele de mai jos filtrul taie 499 candidati, cu "Ad"
+        // simplu taia 780 - 281 de metode pierdute degeaba.
+        "Advert", "AdManager", "AdView", "AdUnit", "AdService", "Rewarded", "Interstitial",
+    };
+
+    // Aici statea lista NeverSubstitute - quantum.code, quantum.core, PhotonDeterministic, Scopely.,
+    // Playgami., Tag.SwapShop - adica assembly-urile care se puteau observa, dar al caror raspuns nu se
+    // scria niciodata inapoi in joc. A fost scoasa odata cu substitutia, fiindca acum nu se mai scrie
+    // NICIUN raspuns inapoi in joc: se cheama amandoua implementarile si se compara ce au intors. Lasata
+    // pe loc, ar fi aratat a plasa de siguranta fara sa o citeasca nimeni, si asta este mai rau decat
+    // lipsa ei - te bizui pe ceva ce nu exista.
+    //
+    // Metodele acelor assembly-uri raman CHEMATE, ca si pana acum, iar ce le tine in frau este MayTouch de
+    // mai jos, impreuna cu TargetUniverse.NeverCall.
+
+    /// <summary>
+    /// Modulele pe care Cpp2IL nu le analizeaza deloc: AsmResolverDllOutputFormatIlRecovery le inlocuieste
+    /// FIECARE corp cu un ciot, deci "Mathf.Clamp" recuperat este literalmente "ldc.r4 0; ret".
+    ///
+    /// Nu sunt doar inutile ca tinte, sunt otravitoare: ar intra in plan cu semnaturi numai-primitive,
+    /// ar fi carligate, ar raspunde zero si ar aparea ca DISAGREES - mii de dezacorduri care nu spun nimic
+    /// despre recuperare. Masurat pe out_w13on: din 17.641 de candidati pe toate cele 150 de DLL-uri,
+    /// 8.333 sunt in module ciot, adica aproape jumatate din lista ar fi fost zgomot.
+    /// </summary>
+    public static bool IsStubbedModule(string assembly) =>
+        assembly != null
+        && (assembly.StartsWith("UnityEngine.", StringComparison.Ordinal)
+            || assembly.StartsWith("Unity.", StringComparison.Ordinal)
+            || assembly.StartsWith("System.", StringComparison.Ordinal)
+            || assembly == "System"
+            || assembly.StartsWith("mscorlib", StringComparison.Ordinal));
+
+    public static bool MayTouch(string assembly, string type)
+    {
+        if (IsStubbedModule(assembly))
+            return false;
+
+        foreach (var denied in NeverTouch)
+            if (assembly != null && assembly.StartsWith(denied, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+        foreach (var denied in NeverTouchNamespaces)
+            if (type != null && type.StartsWith(denied, StringComparison.Ordinal))
+                return false;
+
+        // Potrivirea se face pe numele SCURT al tipului. Pe calea intreaga, un singur segment de namespace
+        // nepotrivit ar arunca tot ce sta sub el - iar namespace-urile intregi care chiar trebuie aruncate
+        // sunt deja in lista de mai sus, pe prefix.
+        var shortName = type;
+        if (shortName != null)
+        {
+            var dot = shortName.LastIndexOf('.');
+            if (dot >= 0)
+                shortName = shortName.Substring(dot + 1);
+
+            foreach (var fragment in NeverTouchTypeFragments)
+                if (shortName.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return false;
+        }
+
+        return true;
+    }
+
 }

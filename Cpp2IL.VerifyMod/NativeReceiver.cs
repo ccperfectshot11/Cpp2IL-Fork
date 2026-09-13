@@ -24,7 +24,7 @@ namespace Cpp2IL.VerifyMod;
 /// o metoda care se uita la campurile ei, comparatia ramane corecta; pentru una care dereferentiaza un
 /// camp referinta, AMBELE parti dau peste null, ceea ce este tot un rezultat simetric.
 ///
-/// Lectia din ReceiverTransfer se respecta la litera si este motivul pentru care fiecare pas de mai jos
+/// Lectia platita cu sute de morti de proces se respecta la litera si este motivul pentru care fiecare pas de mai jos
 /// verifica zeroul inainte sa mearga mai departe: un pointer nativ null sau invechit dat lui
 /// il2cpp_object_get_class ia procesul cu el printr-o violare de acces pe care niciun try nu o prinde.
 ///

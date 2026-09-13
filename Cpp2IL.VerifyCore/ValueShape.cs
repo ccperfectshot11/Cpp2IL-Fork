@@ -196,27 +196,61 @@ public sealed class ValueShape
     // Reads the leaves back OUT of a value rather than trusting the ones we generated. A struct with
     // overlapping [FieldOffset]s - which is what a mis-recovered layout looks like - does not hold what
     // was written into it, and the method sees what the struct actually holds, so that is what the
-    // signature has to cover.
-    public void Absorb(object value, SignatureHash hash)
+    // comparison has to cover.
+    //
+    // Frunzele ies ca BITI si nu ca obiecte, iar asta este chiar ce face comparatia posibila: o structura a
+    // jocului si una recuperata sunt tipuri CLR diferite chiar cand poarta acelasi nume, deci Equals intre
+    // ele raspunde intotdeauna "nu". Doua siruri de long-uri, in schimb, se compara.
+    public void Absorb(object value, List<long> into)
     {
         if (IsLeaf)
         {
-            // Dezbracat inapoi la intregul de dedesubt: un enum in cutie nu se poate despacheta direct
-            // in int - conversia arunca - iar Bits.Of lucreaza pe bitii primitivei. Conversia se face
-            // catre TIPUL LUI de baza, nu catre long, ca sa nu dea peste cap un enum pe UInt64.
-            hash.AbsorbLeaf(Kind, EnumUnderlying == null || value == null
+            if (value == null)
+            {
+                // Nu se intampla la o frunza dintr-o structura construita de noi, dar o structura
+                // recuperata gresit poate avea un camp de referinta acolo unde forma spunea primitiva.
+                into.Add(0);
+                return;
+            }
+
+            // Dezbracat inapoi la intregul de dedesubt: un enum in cutie nu se poate despacheta direct in
+            // int - conversia arunca. Conversia se face catre TIPUL LUI de baza, nu catre long, ca sa nu
+            // dea peste cap un enum pe UInt64.
+            var leaf = EnumUnderlying == null
                 ? value
-                : Convert.ChangeType(value, EnumUnderlying, CultureInfo.InvariantCulture));
+                : Convert.ChangeType(value, EnumUnderlying, CultureInfo.InvariantCulture);
+
+            into.Add(Cpp2IL.VerifyCore.Leaves.Bits(Kind, leaf));
             return;
         }
 
         if (value == null)
         {
-            hash.AbsorbTag(SignatureHash.TagNull);
+            // Un marcaj care nu se poate confunda cu o frunza citita, si care schimba si LUNGIMEA sirului
+            // de biti: o valoare nula si una plina nu ies niciodata egale.
+            into.Add(long.MinValue);
             return;
         }
 
         for (var i = 0; i < Fields.Length; i++)
-            Children[i].Absorb(Fields[i].GetValue(value), hash);
+            Children[i].Absorb(Fields[i].GetValue(value), into);
+    }
+
+    /// <summary>
+    /// Frunzele formei, in ordinea de declarare - aceeasi ordine in care le asteapta Materialise.
+    ///
+    /// Se strang ca FORME si nu doar ca feluri de primitiva fiindca pentru un enum este nevoie si de tipul
+    /// lui, ca sa se stie ce valori are voie sa ia.
+    /// </summary>
+    public void CollectLeaves(List<ValueShape> into)
+    {
+        if (IsLeaf)
+        {
+            into.Add(this);
+            return;
+        }
+
+        foreach (var child in Children)
+            child.CollectLeaves(into);
     }
 }

@@ -122,7 +122,14 @@ CPP2IL_NO_HELPERS=1 CPP2IL_INIT_LOCALS=1 Cpp2IL.exe --game-path <game> \
   --processor-config "attr-injector-use-ez-diff=1`attr-injector-drop-address=1"
 
 Cpp2IL.CompileCheck <out> Assembly-CSharp     # the compilation number
-Cpp2IL.VerifyCheck  <out> --seed N --out p1.json   # behaviour, phase 1
+```
+
+Behaviour is measured by a separate three-step tool, in this order (see `run-verify.ps1`):
+
+```
+.\run-verify.ps1 -Mode index              # one game session, no calls: dump the game method index
+.\run-verify.ps1 -Mode plan               # no game: pair, classify, and write the call worklist
+.\run-verify.ps1 -Mode run -Restarts 40   # game sessions that only execute the worklist
 ```
 
 Rules that exist because ignoring them has cost real time here:
@@ -133,8 +140,8 @@ Rules that exist because ignoring them has cost real time here:
   found to pull in opposite directions.
 - **A marker removed by emitting something wrong is worse than the marker.** The marker is honest
   about not knowing.
-- `Cpp2IL.VerifyCheck` and `Cpp2IL.VerifyCore` are **not in `Cpp2IL.slnx`** — a solution build skips
-  them silently. Build them by project name.
+- `Cpp2IL.VerifyMod`, `Cpp2IL.VerifyPlan` and `Cpp2IL.VerifyCore` are **not in `Cpp2IL.slnx`** — a
+  solution build skips them silently. Build them by project name; `run-verify.ps1` does.
 
 ## Licence
 
