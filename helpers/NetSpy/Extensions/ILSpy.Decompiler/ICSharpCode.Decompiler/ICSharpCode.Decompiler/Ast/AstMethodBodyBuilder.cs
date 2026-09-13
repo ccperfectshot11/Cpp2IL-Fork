@@ -471,6 +471,210 @@ namespace ICSharpCode.Decompiler.Ast {
 		IMDTokenProvider Create_SystemType_get_TypeHandle_result;
 		bool Create_SystemType_get_TypeHandle_initd;
 
+		// Perechea publica a campului privat System.RuntimeTypeHandle::value. Spre deosebire de cele doua
+		// de mai sus, memoria e legata de modul, nu de un bool: constructorul de MemberRef primeste
+		// methodDef.Module, iar constructorul de AstMethodBodyBuilder se ia dintr-un bazin reutilizat, pe
+		// care Reset() nu il curata. Atata timp cat un DecompilerContext tine un singur modul, diferenta
+		// nu se vede, dar un MemberRef legat de alt modul e metadata gresita, nu doar o eticheta gresita.
+		IMDTokenProvider Create_RuntimeTypeHandle_get_Value()
+		{
+			if (Create_RuntimeTypeHandle_get_Value_module == methodDef.Module)
+				return Create_RuntimeTypeHandle_get_Value_result;
+			Create_RuntimeTypeHandle_get_Value_module = methodDef.Module;
+
+			const string propName = "Value";
+			var type = corLib.GetTypeRef("System", "RuntimeTypeHandle");
+			var retType = corLib.IntPtr;
+			var mr = new MemberRefUser(methodDef.Module, "get_" + propName, MethodSig.CreateInstance(retType), type);
+			Create_RuntimeTypeHandle_get_Value_result = mr;
+			var md = mr.ResolveMethod();
+			if (md == null || md.DeclaringType == null)
+				return mr;
+			var prop = md.DeclaringType.FindProperty(propName);
+			if (prop == null)
+				return mr;
+
+			Create_RuntimeTypeHandle_get_Value_result = prop;
+			return prop;
+		}
+		IMDTokenProvider Create_RuntimeTypeHandle_get_Value_result;
+		ModuleDef Create_RuntimeTypeHandle_get_Value_module;
+
+		// Perechea publica a campului intern System.TimeSpan::_ticks. Aceeasi forma ca mai sus.
+		IMDTokenProvider Create_TimeSpan_get_Ticks()
+		{
+			if (Create_TimeSpan_get_Ticks_module == methodDef.Module)
+				return Create_TimeSpan_get_Ticks_result;
+			Create_TimeSpan_get_Ticks_module = methodDef.Module;
+
+			const string propName = "Ticks";
+			var type = corLib.GetTypeRef("System", "TimeSpan");
+			var retType = corLib.Int64;
+			var mr = new MemberRefUser(methodDef.Module, "get_" + propName, MethodSig.CreateInstance(retType), type);
+			Create_TimeSpan_get_Ticks_result = mr;
+			var md = mr.ResolveMethod();
+			if (md == null || md.DeclaringType == null)
+				return mr;
+			var prop = md.DeclaringType.FindProperty(propName);
+			if (prop == null)
+				return mr;
+
+			Create_TimeSpan_get_Ticks_result = prop;
+			return prop;
+		}
+		IMDTokenProvider Create_TimeSpan_get_Ticks_result;
+		ModuleDef Create_TimeSpan_get_Ticks_module;
+
+		// Acelasi rationament ca la RuntimeTypeHandle::value, pe un camp la fel de simplu: proprietatea
+		// publica Ticks e declarata in aceeasi structura, are acelasi tip (System.Int64) si getterul ei nu
+		// face decat sa intoarca acest camp.
+		//
+		// Atentie sa nu se citeasca prin analogie cu DateTime::_dateData, care arata la fel dar NU este:
+		// acolo campul impacheteaza si Kind, si ticks, in acelasi intreg, deci nu e `Ticks` si nu are niciun
+		// corespondent public de un singur membru. La TimeSpan campul chiar este numarul de ticks.
+		//
+		// Ca mai sus, numai citirea. Ticks nu are setter, deci scrierile raman pe camp.
+		bool IsTimeSpanTicksField(IField field)
+		{
+			if (field == null || field.Name != "_ticks")
+				return false;
+
+			var declaring = field.DeclaringType;
+			if (declaring == null || declaring.Name != "TimeSpan" || declaring.FullName != "System.TimeSpan")
+				return false;
+
+			return field.FieldSig?.Type?.FullName == "System.Int64";
+		}
+
+		// Corpul lui get_Ticks este chiar `return this._ticks;` - aceeasi capcana de recursivitate.
+		bool CurrentMethodIsTimeSpanGetTicks()
+		{
+			return methodDef != null
+				&& methodDef.Name == "get_Ticks"
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == "System.TimeSpan";
+		}
+
+		// il2cpp inline-eaza getterul System.RuntimeTypeHandle::get_Value, asa ca in codul recuperat ramane
+		// citirea directa a campului privat `value`. Cand exportul se recompileaza peste biblioteca standard
+		// reala, campul nu e vizibil si Roslyn da CS1061.
+		//
+		// Echivalenta nu e o aproximare: proprietatea publica Value e declarata in aceeasi structura, are
+		// exact acelasi tip (System.IntPtr), iar getterul ei nu face altceva decat sa intoarca acest camp.
+		// De aceea verificam si tipul campului - daca nu e IntPtr, nu e structura pe care o cunoastem si
+		// lasam lucrurile asa cum sunt.
+		//
+		// Se muta NUMAI citirea. Value nu are setter, deci Stfld ramane neatins, si nu se poate lua adresa
+		// unei proprietati, deci nici Ldflda. O scriere sau o luare de adresa nu are corespondent public, iar
+		// o inventie acolo ar preschimba o eroare de compilare, care se vede, intr-o diferenta de
+		// comportament, care nu se vede.
+		bool IsRuntimeTypeHandleValueField(IField field)
+		{
+			if (field == null || field.Name != "value")
+				return false;
+
+			var declaring = field.DeclaringType;
+			if (declaring == null || declaring.Name != "RuntimeTypeHandle" || declaring.FullName != "System.RuntimeTypeHandle")
+				return false;
+
+			return field.FieldSig?.Type?.FullName == "System.IntPtr";
+		}
+
+		// Corpul lui get_Value este chiar `return this.value;`. Daca l-am rescrie si pe acela, getterul s-ar
+		// chema pe sine si ar da recursivitate infinita - o eroare de compilare schimbata intr-un
+		// StackOverflow la rulare. In lantul de fata se decompileaza doar ansamblurile jocului, nu si corlib-ul
+		// recuperat, deci cazul nu apare azi; garda exista ca sa nu depinda corectitudinea de asta.
+		bool CurrentMethodIsRuntimeTypeHandleGetValue()
+		{
+			return methodDef != null
+				&& methodDef.Name == "get_Value"
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == "System.RuntimeTypeHandle";
+		}
+
+		// Generatorul de legaturi al Unity scrie fiecare proprietate care trece o structura peste granita
+		// nativa in trei bucati: proprietatea publica si doua metode private de marsalare.
+		//
+		//     public Vector3 position {
+		//         get { get_position_Injected(out var ret); return ret; }
+		//         set { set_position_Injected(ref value); }
+		//     }
+		//     private extern void get_position_Injected(out Vector3 ret);
+		//     private extern void set_position_Injected(ref Vector3 value);
+		//
+		// il2cpp inline-eaza accesorul, asa ca in codul recuperat ramane apelul direct la metoda privata.
+		// Echivalenta nu e ghicita, e chiar definitia proprietatii: `t.get_position_Injected(ref v)` este
+		// `v = t.position`, iar `t.set_position_Injected(ref v)` este `t.position = v`.
+		//
+		// Fara regula asta, cele doua forme ies diferit, dar amandoua gresit. Getterul iese ca apel si da
+		// CS1061. Seterul pacaleste euristica pe nume de mai jos - GetMethodSemanticsAttributes vede
+		// prefixul "set_" si il crede accesor - si iese ca `t.position_Injected = ref v`, care pe langa
+		// CS1061 nu e nici macar sintaxa valida.
+		//
+		// Ce NU prinde regula, intentionat:
+		//  - metodele obisnuite marsalate (TransformPoint_Injected, LookRotation_Injected, TRS_Injected).
+		//    Nu au prefix get_/set_, deci nu intra. Acolo ordinea si numarul argumentelor difera de la caz
+		//    la caz si nu exista o forma unica pe care sa o putem demonstra.
+		//  - orice alt numar de argumente decat unul singur. In exportul masurat, toate cele 586 de apeluri
+		//    `get_*_Injected(` au exact un argument, si nici unul nu contine virgula.
+		//  - argumentul care nu e `ref`/`out`. Forma dovedita e cea cu adresa; pe alta nu ne pronuntam.
+		//  - metodele care chiar sunt accesori declarati (SemanticsAttributes), adica au in spate o
+		//    proprietate care se cheama ea insasi `X_Injected`. Nu se intampla la Unity, dar daca s-ar
+		//    intampla, redenumirea ar fi o minciuna.
+		//  - cazul in care tipul se rezolva si nu are proprietatea cautata: atunci premisa e falsa si
+		//    rescrierea ar fabrica o eroare noua in loc sa stearga una.
+		AstNode TransformUnityInjectedAccessor(IMethod method, MethodDef resolvedMethod, Expression target, List<Ast.Expression> methodArgs)
+		{
+			if (methodArgs.Count != 1 || method == null)
+				return null;
+
+			// Un accesor adevarat isi pastreaza numele; numai o metoda simpla poate fi marsalarea.
+			if (resolvedMethod != null && resolvedMethod.SemanticsAttributes != MethodSemanticsAttributes.None)
+				return null;
+
+			string name = method.Name;
+			const string suffix = "_Injected";
+			if (name == null || !name.EndsWith(suffix, StringComparison.Ordinal))
+				return null;
+
+			bool isGetter = name.StartsWith("get_", StringComparison.Ordinal);
+			if (!isGetter && !name.StartsWith("set_", StringComparison.Ordinal))
+				return null;
+
+			string propName = name.Substring(4, name.Length - 4 - suffix.Length);
+			if (propName.Length == 0)
+				return null;
+
+			// Numai forma cu adresa e cea dovedita.
+			var direction = methodArgs[0] as DirectionExpression;
+			if (direction == null)
+				return null;
+
+			var declaringTypeDef = method.DeclaringType == null ? null : method.DeclaringType.ResolveTypeDef();
+			PropertyDef prop = declaringTypeDef == null ? null : declaringTypeDef.FindProperty(propName);
+			if (declaringTypeDef != null && prop == null)
+				return null;
+
+			// Corpul accesorului public este chiar apelul pe care il rescriem. Daca l-am rescrie si acolo,
+			// proprietatea s-ar chema pe sine: recursivitate infinita in loc de eroare de compilare. In
+			// lantul de fata se decompileaza doar ansamblurile jocului, nu si UnityEngine recuperat, deci
+			// cazul nu apare azi; garda exista ca sa nu depinda corectitudinea de asta.
+			if (this.methodDef != null
+				&& (this.methodDef.Name == "get_" + propName || this.methodDef.Name == "set_" + propName)
+				&& this.methodDef.DeclaringType != null
+				&& method.DeclaringType != null
+				&& this.methodDef.DeclaringType.FullName == method.DeclaringType.FullName)
+				return null;
+
+			var value = UnpackDirectionExpression(direction);
+			object annotation = prop != null ? (object)prop : method;
+			var access = target.Member(propName, annotation).WithAnnotation(annotation);
+
+			return isGetter
+				? new AssignmentExpression(value, access)
+				: new AssignmentExpression(access, value);
+		}
+
 		object GetParameterColor(ILVariable ilv)
 		{
 			if (valueParameterIsKeyword && ilv.OriginalParameter?.Name == "value" && methodDef.Parameters.Count > 0 && methodDef.Parameters[methodDef.Parameters.Count - 1] == ilv.OriginalParameter)
@@ -869,6 +1073,10 @@ namespace ICSharpCode.Decompiler.Ast {
 				case ILCode.Ldfld:
 					if (arg1 is DirectionExpression)
 						arg1 = ((DirectionExpression)arg1).Expression.Detach();
+					if (IsRuntimeTypeHandleValueField(operand as IField) && !CurrentMethodIsRuntimeTypeHandleGetValue())
+						return arg1.Member("Value", BoxedTextColor.InstanceProperty).WithAnnotation(Create_RuntimeTypeHandle_get_Value());
+					if (IsTimeSpanTicksField(operand as IField) && !CurrentMethodIsTimeSpanGetTicks())
+						return arg1.Member("Ticks", BoxedTextColor.InstanceProperty).WithAnnotation(Create_TimeSpan_get_Ticks());
 					return arg1.Member(((IField) operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Ldsfld:
 					return AstBuilder.ConvertType(((IField)operand).DeclaringType, stringBuilder)
@@ -1262,6 +1470,16 @@ namespace ICSharpCode.Decompiler.Ast {
 				return target.Indexer(methodArgs);
 			} else if (method.Name == "Set" && (method.DeclaringType.TryGetArraySig() != null || method.DeclaringType.TryGetSZArraySig() != null) && methodArgs.Count > 2) {
 				return new AssignmentExpression(target.Indexer(methodArgs.GetRange(0, methodArgs.Count - 1)), methodArgs.Last());
+			}
+
+			// Accesorii marsalati ai Unity se rezolva inaintea testului de accesor de mai jos, fiindca
+			// euristica pe nume de acolo ia prefixul "set_" drept accesor si strica tocmai forma pe care o
+			// reparam aici. Cand forceSemAttr e dat, apelul vine de la CallReadOnlySetter, adica de la un
+			// accesor pe care chiar decompilatorul l-a sintetizat - acolo nu avem ce cauta.
+			if (forceSemAttr == null) {
+				var injectedAccessor = TransformUnityInjectedAccessor(method, methodDef, target, methodArgs);
+				if (injectedAccessor != null)
+					return injectedAccessor;
 			}
 
 			// Test whether the method is an accessor:
