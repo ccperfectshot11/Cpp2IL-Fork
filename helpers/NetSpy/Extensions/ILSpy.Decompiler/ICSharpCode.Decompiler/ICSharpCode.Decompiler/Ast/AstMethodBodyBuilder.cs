@@ -500,6 +500,61 @@ namespace ICSharpCode.Decompiler.Ast {
 		IMDTokenProvider Create_RuntimeTypeHandle_get_Value_result;
 		ModuleDef Create_RuntimeTypeHandle_get_Value_module;
 
+		// Perechea publica a campului intern System.TimeSpan::_ticks. Aceeasi forma ca mai sus.
+		IMDTokenProvider Create_TimeSpan_get_Ticks()
+		{
+			if (Create_TimeSpan_get_Ticks_module == methodDef.Module)
+				return Create_TimeSpan_get_Ticks_result;
+			Create_TimeSpan_get_Ticks_module = methodDef.Module;
+
+			const string propName = "Ticks";
+			var type = corLib.GetTypeRef("System", "TimeSpan");
+			var retType = corLib.Int64;
+			var mr = new MemberRefUser(methodDef.Module, "get_" + propName, MethodSig.CreateInstance(retType), type);
+			Create_TimeSpan_get_Ticks_result = mr;
+			var md = mr.ResolveMethod();
+			if (md == null || md.DeclaringType == null)
+				return mr;
+			var prop = md.DeclaringType.FindProperty(propName);
+			if (prop == null)
+				return mr;
+
+			Create_TimeSpan_get_Ticks_result = prop;
+			return prop;
+		}
+		IMDTokenProvider Create_TimeSpan_get_Ticks_result;
+		ModuleDef Create_TimeSpan_get_Ticks_module;
+
+		// Acelasi rationament ca la RuntimeTypeHandle::value, pe un camp la fel de simplu: proprietatea
+		// publica Ticks e declarata in aceeasi structura, are acelasi tip (System.Int64) si getterul ei nu
+		// face decat sa intoarca acest camp.
+		//
+		// Atentie sa nu se citeasca prin analogie cu DateTime::_dateData, care arata la fel dar NU este:
+		// acolo campul impacheteaza si Kind, si ticks, in acelasi intreg, deci nu e `Ticks` si nu are niciun
+		// corespondent public de un singur membru. La TimeSpan campul chiar este numarul de ticks.
+		//
+		// Ca mai sus, numai citirea. Ticks nu are setter, deci scrierile raman pe camp.
+		bool IsTimeSpanTicksField(IField field)
+		{
+			if (field == null || field.Name != "_ticks")
+				return false;
+
+			var declaring = field.DeclaringType;
+			if (declaring == null || declaring.Name != "TimeSpan" || declaring.FullName != "System.TimeSpan")
+				return false;
+
+			return field.FieldSig?.Type?.FullName == "System.Int64";
+		}
+
+		// Corpul lui get_Ticks este chiar `return this._ticks;` - aceeasi capcana de recursivitate.
+		bool CurrentMethodIsTimeSpanGetTicks()
+		{
+			return methodDef != null
+				&& methodDef.Name == "get_Ticks"
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == "System.TimeSpan";
+		}
+
 		// il2cpp inline-eaza getterul System.RuntimeTypeHandle::get_Value, asa ca in codul recuperat ramane
 		// citirea directa a campului privat `value`. Cand exportul se recompileaza peste biblioteca standard
 		// reala, campul nu e vizibil si Roslyn da CS1061.
@@ -1020,6 +1075,8 @@ namespace ICSharpCode.Decompiler.Ast {
 						arg1 = ((DirectionExpression)arg1).Expression.Detach();
 					if (IsRuntimeTypeHandleValueField(operand as IField) && !CurrentMethodIsRuntimeTypeHandleGetValue())
 						return arg1.Member("Value", BoxedTextColor.InstanceProperty).WithAnnotation(Create_RuntimeTypeHandle_get_Value());
+					if (IsTimeSpanTicksField(operand as IField) && !CurrentMethodIsTimeSpanGetTicks())
+						return arg1.Member("Ticks", BoxedTextColor.InstanceProperty).WithAnnotation(Create_TimeSpan_get_Ticks());
 					return arg1.Member(((IField) operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Ldsfld:
 					return AstBuilder.ConvertType(((IField)operand).DeclaringType, stringBuilder)
