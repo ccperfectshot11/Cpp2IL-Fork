@@ -49,6 +49,10 @@ namespace ICSharpCode.Decompiler.Ast.Transforms {
 				new IntroduceQueryExpressions(context), // must run after IntroduceExtensionMethods
 				new CombineQueryExpressions(context),
 				new FlattenSwitchBlocks(), 
+				// Ultimul: dezambaleaza `ref x` din pozitiile in care C# cere o valoare. Trebuie sa ruleze dupa
+				// toate transformele care MUTA noduri, fiindca tocmai mutarea dintr-o pozitie de argument intr-una
+				// de valoare face `ref`-ul nevalid, si numai aici fiecare nod e in pozitia lui finala.
+				new NormalizeByRefExpressions(context),
 			};
 		}
 		
