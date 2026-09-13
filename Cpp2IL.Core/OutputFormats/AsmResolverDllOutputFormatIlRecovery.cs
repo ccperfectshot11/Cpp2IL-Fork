@@ -97,6 +97,13 @@ public class AsmResolverDllOutputFormatIlRecovery : AsmResolverDllOutputFormat
             instructions.Add(CilOpCodes.Throw);
         }
 
+        // Aici, si nu in GenerateIl, fiindca un constructor ajunge sa aiba corp pe trei cai, nu pe una:
+        // generat din ISIL, ciot atunci cand nu exista cod nativ de tradus, si corpul de exceptie cand
+        // analiza a crapat. Ciotul este chiar familia cea mai numeroasa - un `.ctor` ciot este doar `ret`,
+        // adica exact cele 207 ThisUninitReturn raportate la offset 0 - deci o reparatie pusa doar pe calea
+        // generata ar fi sarit tocmai peste ele.
+        Analysis.ConstructorChain.Ensure(methodDefinition);
+
         methodContext.ReleaseAnalysisData();
     }
 

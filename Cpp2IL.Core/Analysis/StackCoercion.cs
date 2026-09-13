@@ -789,6 +789,25 @@ public static class StackCoercion
                 : null;
         }
 
+        // Un `ldnull` care ajunge intr-un slot de native int nu este o referinta pusa gresit, ci acelasi
+        // zero pe care lifterul l-a scris ca referinta fiindca atat stia despre registru. `null` si zeroul
+        // nativ sunt aceiasi biti, dar pentru verificator nu sunt acelasi tip, si nicio instructiune nu
+        // converteste o referinta in native int - de unde 441 de refuzuri, peste 357 de metode, dintre care
+        // 289 nu mai au nimic altceva.
+        //
+        // Valoarea literala nu se poate rescrie de aici: Reconcile stie sa insereze dupa instructiunea
+        // producatoare, nu sa o inlocuiasca. Asa ca null-ul deja impins se arunca si se pune in loc zeroul
+        // pe care slotul il cere - aceeasi valoare, o instructiune in plus, si adancimea stivei neatinsa.
+        // Doar native int: un `ldnull` catre Int32 sau catre un struct este un dezacord despre ce tine
+        // slotul, nu despre cum se scrie zeroul, iar masurat ar aduce o singura metoda in plus.
+        if (wanted == Kind.Native && value is { Kind: Kind.Ref, Type: null })
+            return new List<CilInstruction>
+            {
+                new(CilOpCodes.Pop),
+                new(CilOpCodes.Ldc_I4_0),
+                new(CilOpCodes.Conv_I),
+            };
+
         if (value.Kind == Kind.Ref)
             return value.Type?.ElementType == ElementType.Object
                 ? [new CilInstruction(CilOpCodes.Unbox_Any, expected.ToTypeDefOrRef())]
