@@ -594,15 +594,82 @@ namespace ICSharpCode.Decompiler.Ast {
 				&& methodDef.DeclaringType.FullName == "System.Collections.Generic.List`1";
 		}
 
-		// Adnotarea corecta e PropertyDef-ul lui Count, cand tipul se rezolva. Cand nu se rezolva, lasam
-		// numai culoarea: WithAnnotation(null) arunca, si o adnotare de camp pe un membru care acum se
-		// numeste Count ar putea induce in eroare transformarile de mai tarziu.
-		PropertyDef FindListCountProperty(IField field)
+		// Adnotarea corecta e PropertyDef-ul proprietatii, cand tipul se rezolva. Cand nu se rezolva, lasam
+		// numai culoarea: WithAnnotation(null) arunca, si o adnotare de camp pe un membru care acum poarta
+		// numele proprietatii ar putea induce in eroare transformarile de mai tarziu.
+		// Trece prin ScopeType ca sa mearga si pe tipuri generice, unde DeclaringType e un TypeSpec peste
+		// instantiere; pe tipuri negenerice ScopeType se intoarce pe sine, deci nu schimba nimic.
+		PropertyDef FindPropertyOnFieldOwner(IField field, string propName)
 		{
 			var declaring = field == null ? null : field.DeclaringType;
 			var scope = declaring == null ? null : declaring.ScopeType;
 			var td = scope == null ? null : scope.ResolveTypeDef();
-			return td == null ? null : td.FindProperty("Count");
+			return td == null ? null : td.FindProperty(propName);
+		}
+
+		// Campuri STATICE interne din BCL care au in spate o proprietate publica statica ce le intoarce
+		// direct. Spre deosebire de primele trei reguli, astea intra pe Ldsfld, nu pe Ldfld.
+		//
+		// Numele au fost citite din binarele pe care se compileaza chiar codul asta, nu deduse din forma,
+		// si asta a contat: Mono 4.5 si corlib-ul de IL2CPP al lui Unity 2021.3.25f1 folosesc amandoua
+		// `s_postMethod`. Jocul a fost construit cu un Mono mai vechi, si acolo - in System.Net.Http.dll
+		// recuperat din joc - campurile chiar se numesc `post_method`, `get_method` s.a.m.d., iar
+		// proprietatile publice stau in aceeasi clasa. Daca cineva reface maparea pe alt joc, numele
+		// astea trebuie recitite, nu presupuse.
+		//
+		// CultureInfo la fel, confirmat in mscorlib.dll din MonoBleedingEdge:
+		//     private static volatile CultureInfo invariant_culture_info = ...;
+		//     public static CultureInfo InvariantCulture => invariant_culture_info;
+		//
+		// Toate sunt numai citire. In exportul masurat nu exista nicio scriere pe niciunul dintre ele -
+		// verificat, nu presupus; o scriere pe post_method ar fi insemnat ca jocul isi rescrie metodele
+		// HTTP standard, ceea ce ar fi fost o descoperire, nu o eroare de compilare.
+		static string GetPublicStaticPropertyForBclField(IField field)
+		{
+			if (field == null)
+				return null;
+
+			string fieldName = field.Name;
+			var declaring = field.DeclaringType;
+			if (fieldName == null || declaring == null)
+				return null;
+
+			string typeName = declaring.FullName;
+			// Campul si proprietatea trebuie sa aiba acelasi tip; altfel nu e perechea pe care o stim.
+			string fieldTypeName = field.FieldSig?.Type?.FullName;
+
+			if (typeName == "System.Net.Http.HttpMethod") {
+				if (fieldTypeName != "System.Net.Http.HttpMethod")
+					return null;
+				switch (fieldName) {
+					case "get_method": return "Get";
+					case "post_method": return "Post";
+					case "put_method": return "Put";
+					case "delete_method": return "Delete";
+					case "head_method": return "Head";
+					case "options_method": return "Options";
+					case "trace_method": return "Trace";
+					default: return null;
+				}
+			}
+
+			if (typeName == "System.Globalization.CultureInfo"
+				&& fieldName == "invariant_culture_info"
+				&& fieldTypeName == "System.Globalization.CultureInfo")
+				return "InvariantCulture";
+
+			return null;
+		}
+
+		// Corpul fiecareia dintre proprietatile de mai sus este chiar citirea campului. Aceeasi capcana de
+		// recursivitate ca la celelalte reguli, generalizata.
+		bool CurrentMethodIsGetterOf(ITypeDefOrRef declaringType, string propName)
+		{
+			return methodDef != null
+				&& declaringType != null
+				&& methodDef.Name == "get_" + propName
+				&& methodDef.DeclaringType != null
+				&& methodDef.DeclaringType.FullName == declaringType.FullName;
 		}
 
 		// il2cpp inline-eaza getterul System.RuntimeTypeHandle::get_Value, asa ca in codul recuperat ramane
@@ -1129,13 +1196,25 @@ namespace ICSharpCode.Decompiler.Ast {
 						return arg1.Member("Ticks", BoxedTextColor.InstanceProperty).WithAnnotation(Create_TimeSpan_get_Ticks());
 					if (IsListSizeField(operand as IField) && !CurrentMethodIsListGetCount()) {
 						var countExpr = arg1.Member("Count", BoxedTextColor.InstanceProperty);
-						var countProp = FindListCountProperty((IField)operand);
+						var countProp = FindPropertyOnFieldOwner((IField)operand, "Count");
 						if (countProp != null)
 							countExpr = countExpr.WithAnnotation(countProp);
 						return countExpr;
 					}
 					return arg1.Member(((IField) operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Ldsfld:
+					{
+						var staticField = (IField)operand;
+						string staticPropName = GetPublicStaticPropertyForBclField(staticField);
+						if (staticPropName != null && !CurrentMethodIsGetterOf(staticField.DeclaringType, staticPropName)) {
+							var staticExpr = AstBuilder.ConvertType(staticField.DeclaringType, stringBuilder)
+								.Member(staticPropName, BoxedTextColor.StaticProperty);
+							var staticProp = FindPropertyOnFieldOwner(staticField, staticPropName);
+							if (staticProp != null)
+								staticExpr = staticExpr.WithAnnotation(staticProp);
+							return staticExpr;
+						}
+					}
 					return AstBuilder.ConvertType(((IField)operand).DeclaringType, stringBuilder)
 						.Member(((IField)operand).Name, operand).WithAnnotation(operand);
 				case ILCode.Stfld:
