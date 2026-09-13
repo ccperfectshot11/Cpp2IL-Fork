@@ -35,6 +35,11 @@
 #
 # Rezultatele se aduna in Mods\active-results.tsv si nu se rescriu niciodata: o sesiune noua sare peste ce
 # s-a masurat deja, deci universul se parcurge in reprize de cate douazeci de minute.
+#
+# TOCMAI DE ACEEA, cand se schimba felul in care se fabrica intrarile, trebuie -Fresh: o metoda masurata
+# deja cu argumente null NU va fi chemata din nou cu sir, fiindca cheia ei este in active-results.tsv.
+# Fara -Fresh, o imbunatatire a intrarilor se vede numai pe metodele nemasurate inca, si pare mult mai mica
+# decat este.
 param(
     [ValidateSet("dump", "static", "full")]
     [string]$Mode = "dump",
@@ -58,6 +63,12 @@ param(
     # fatala nu e reparata, repornirea trebuie ceruta pe fata.
     [switch]$RestartOnCrash,
     [switch]$Redump,
+    # Intoarce maturarea la felul de dinainte, pentru cand trebuie aflat daca o schimbare de cifre vine de
+    # la intrarile mai bune sau de la altceva. -NoRefArgs pune inapoi null in parametrii de tip clasa;
+    # -NoReceiverFields lasa receptorul pe zero, fara campuri scrise. Rulate una cate una, ele SEPARA
+    # efectul celor doua schimbari.
+    [switch]$NoRefArgs,
+    [switch]$NoReceiverFields,
     [switch]$Fresh
 )
 
@@ -101,6 +112,11 @@ $env:CPP2IL_ACTIVE_PER_FRAME = "$PerFrame"
 $env:CPP2IL_ACTIVE_DUMP_ONLY = if ($Mode -eq "dump") { "1" } else { "0" }
 $env:CPP2IL_ACTIVE_RECEIVERS = if ($Mode -eq "static") { "0" } else { "1" }
 $env:CPP2IL_ACTIVE_REDUMP = if ($Redump) { "1" } else { "0" }
+# Intrarile de calitate: siruri si tablouri adevarate in loc de null, si campuri scrise in receptor in loc
+# de zero. Pornite implicit - fara ele randurile ies etichetate "null-reference" si "uninitialised-receiver",
+# adica tocmai galetile in care masuratoarea a aratat ca nu se afla nimic.
+$env:CPP2IL_ACTIVE_REF_ARGS = if ($NoRefArgs) { "0" } else { "1" }
+$env:CPP2IL_ACTIVE_RECEIVER_FIELDS = if ($NoReceiverFields) { "0" } else { "1" }
 # Lista de siguranta ramane PORNITA. Se cheama metode, nu se doar observa, deci plati, cont, telemetrie si
 # retea stau pe dinafara. Nu o opri decat cu jocul deconectat de la servere, si atunci pe fata.
 $env:CPP2IL_ACTIVE_SAFETY = "1"
