@@ -18,6 +18,10 @@ internal static class FieldDiag
     public static readonly bool Enabled = System.Environment.GetEnvironmentVariable("CPP2IL_FIELDDIAG") == "1";
     private static long _candidates, _resolved, _failValueTypeBase, _failBeyondLayout, _failNoExactMatch, _failGenericVt;
     private static long _failEmptyLayout, _failEmptyOnlyNoBackingData;
+
+    // Baze de tip `T*`, numarate separat ca sa se vada cat aduce desfacerea pointerului fata de restul.
+    private static long _pointerCandidates, _pointerResolved;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> PointerMissed = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> EmptyLayoutOwners = new();
     private static int _hooked;
 
@@ -40,12 +44,25 @@ internal static class FieldDiag
                 System.Console.WriteLine("  -- delta to nearest lower field (0x1000 = >0x200 / beyond layout) --");
                 foreach (var kv in DeltaToNearestField.OrderByDescending(k => k.Value).Take(20))
                     System.Console.WriteLine($"     delta 0x{kv.Key:X4} : {kv.Value}");
+                System.Console.WriteLine("  -- baze `T*` (pointer catre structura) --");
+                System.Console.WriteLine($"     candidati : {_pointerCandidates}    rezolvati -> ldfld : {_pointerResolved}");
+                System.Console.WriteLine("     top 20 ratari (tip+ofset):");
+                foreach (var kv in PointerMissed.OrderByDescending(k => k.Value).Take(20))
+                    System.Console.WriteLine($"       {kv.Value,6}  {kv.Key}");
             };
     }
 
     public static void Candidate() { if (!Enabled) return; EnsureDump(); System.Threading.Interlocked.Increment(ref _candidates); }
     public static void Resolved() { if (!Enabled) return; System.Threading.Interlocked.Increment(ref _resolved); }
     public static void GenericVtSkip() { if (!Enabled) return; System.Threading.Interlocked.Increment(ref _failGenericVt); }
+    public static void PointerCandidate() { if (!Enabled) return; EnsureDump(); System.Threading.Interlocked.Increment(ref _pointerCandidates); }
+    public static void PointerResolved() { if (!Enabled) return; System.Threading.Interlocked.Increment(ref _pointerResolved); }
+
+    public static void PointerMiss(TypeAnalysisContext pointee, long addend)
+    {
+        if (!Enabled) return;
+        PointerMissed.AddOrUpdate($"{pointee.FullName}*+0x{addend:X}", 1, (_, v) => v + 1);
+    }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> DeltaToNearestField = new();
 
@@ -259,6 +276,37 @@ public static class MetadataResolver
                 if (byRefStruct != null)
                     owner = byRefStruct;
 
+                // Un pointer nemanaged catre o structura, `T*`, adreseaza chiar valoarea, deci ofsetul
+                // numeste un camp al tipului indicat. Pana acum PointerTypeAnalysisContext nu era desfacut
+                // nicaieri aici: `owner` ramanea pointerul, care nu are niciun camp, asa ca fiecare citire
+                // de forma [p+ofset] ajungea marker. E o gaura structurala, nu cazuri izolate.
+                //
+                // Ofsetul se cauta BRUT, fara antetul de obiect. Dovada, din tabela de campuri a acestui
+                // binar: Quantum.Transform3D are SIZE 56, cu Position la 0x0 si Rotation la 0x18, iar
+                // FPVector3/FPQuaternion sunt siruri de FP de cate 8 octeti. Ofseturile care apar efectiv
+                // pe `Quantum.Transform3D*` sunt {8, 10, 18, 20, 28, 30}, adica exact Position.Y,
+                // Position.Z, Rotation.X, Y, Z si W citite brut. Cu antetul de 0x10 adaugat ar iesi
+                // {18, 20, 28, 30, 38, 40}, iar 0x38 si 0x40 sunt deja dincolo de structura - deci varianta
+                // deplasata nu e doar mai putin probabila, e imposibila.
+                //
+                // Indexarea intr-un sir nu poate fi confundata cu un camp, si asta tine matematic, nu din
+                // noroc: elementul n>=1 incepe la n*sizeof(T) >= sizeof(T), iar orice camp al lui T sta la
+                // un ofset < sizeof(T), deci potrivirea exacta nu are cum sa il prinda. Nici coborarea in
+                // campuri imbricate nu il prinde: daca ultimul camp sta la L si are dimensiunea S, atunci
+                // L + S <= sizeof(T), deci restul ramas e addend - L >= sizeof(T) - L >= S, adica la sau
+                // dincolo de sfarsitul acelui camp, unde nu mai exista niciun subcamp de potrivit.
+                var pointerStruct = staticOwner == null
+                    && owner is PointerTypeAnalysisContext { ElementType: { IsValueType: true } pointee }
+                    && !pointee.IsEnumType
+                    ? pointee
+                    : null;
+
+                if (pointerStruct != null)
+                {
+                    owner = pointerStruct;
+                    FieldDiag.PointerCandidate();
+                }
+
                 // Only where the metadata really is boxed-relative. Where it is not - see
                 // RawNestedOffsets - a byref points at the value itself and the offsets already agree,
                 // so adding the header would walk past the field the instruction named.
@@ -307,6 +355,8 @@ public static class MetadataResolver
                     if (ResolveNestedField(owner, searchAddend, staticOwner != null) is not { } nested)
                     {
                         FieldDiag.Failure(owner, searchAddend);
+                        if (pointerStruct != null)
+                            FieldDiag.PointerMiss(pointerStruct, searchAddend);
                         continue;
                     }
 
@@ -321,6 +371,8 @@ public static class MetadataResolver
                 instruction.SetOperand(i, new FieldReference(field, local, (int)memory.Addend, innerPath));
                 changed = true;
                 FieldDiag.Resolved();
+                if (pointerStruct != null)
+                    FieldDiag.PointerResolved();
             }
         }
 

@@ -76,7 +76,7 @@ internal static class MarkerDiag
         {
             "INDEXED",
             "A4_untyped_base",
-            "BYREF_base",
+            "BYREF_base", "POINTER_base",
             "A1_value_primitive", "A1_value_struct",
             "A2_object", "A2_other_nofields", "A3_interface",
             "B1_header_below_first", "B2_beyond_last", "B3_between_fields", "B4_exact_hit_lookup_miss",
@@ -185,6 +185,11 @@ internal static class MarkerDiag
 
         // 3. byref base (managed pointer). Fix-D territory; kept as its own leaf.
         if (baseType is ByRefTypeAnalysisContext) { Bump("BYREF_base", mk); return; }
+
+        // 3b. baza `T*`. Are frunza ei fiindca ResolveFieldOffsets desface acum pointerul: ce ramane aici
+        // e strict restul pe care ofsetul nu l-a putut lega de un camp, nu toata clasa. Inainte cadea in
+        // A2_other_nofields, unde nu se vedea deloc, pointerul neavand campuri.
+        if (baseType is PointerTypeAnalysisContext) { Bump("POINTER_base", mk); return; }
 
         // 4. value-type base (not byref): A1. split primitive/no-field vs struct-with-fields.
         if (baseType.IsValueType)
