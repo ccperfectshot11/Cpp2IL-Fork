@@ -131,6 +131,97 @@ public static class FuzzInputs
         }
     }
 
+    // Valori BLANDE, pentru locurile unde o valoare urata nu imbogateste masuratoarea ci doar omoara
+    // procesul. Doua astfel de locuri exista: campurile unui receptor fabricat si elementele unui tablou
+    // fabricat.
+    //
+    // De ce sunt separate de RandomValue si nu doar "acelasi generator cu alta samanta". Un argument urat
+    // este dat unei metode care il primeste pe fata si, in cel mai rau caz, iese pe o ramura de eroare. Un
+    // camp de receptor este cu totul altceva: metoda il citeste ca pe starea ei si il crede. Un camp pus
+    // pe 2.000.000.000 devine lungimea unei bucle sau indicele unui tablou, iar IL2CPP compilat pentru
+    // livrare nu mai are verificari de interval - deci nu iese o exceptie, ci moare procesul, exact cum s-a
+    // intamplat cu enum-urile fuzzate pe tot intervalul.
+    //
+    // De aceea intervalul de aici este mic si marginit dinadins: intregii stau intre -8 si 64 (plus cateva
+    // puteri mici ale lui doi), iar numerele cu virgula sunt finite - niciun NaN si nicio infinitate.
+    // Pentru Int64 se dau si multipli de 65536, fiindca un long al simularii Photon este virgula fixa
+    // Q16.16 si un 7 acolo inseamna 0,0001, adica practic tot zero.
+    //
+    // Ce se pierde: ramurile care se deschid numai la valori extreme raman neatinse in campuri. Este
+    // acelasi schimb constient ca la domeniul enum-urilor - o ramura nemasurata costa mai putin decat o
+    // repornire de treizeci de secunde.
+    public static object TameValue(LeafKind kind, ref DeterministicRandom random)
+    {
+        var raw = random.Next();
+
+        switch (kind)
+        {
+            case LeafKind.Bool:
+                return (raw & 1) != 0;
+
+            case LeafKind.Char:
+                return TameChars[(int)(raw % (ulong)TameChars.Length)];
+
+            case LeafKind.Single:
+                return (float)TameReals[(int)(raw % (ulong)TameReals.Length)];
+
+            case LeafKind.Double:
+                return TameReals[(int)(raw % (ulong)TameReals.Length)];
+
+            case LeafKind.Int64:
+            case LeafKind.UInt64:
+            {
+                // Un sfert din trageri sunt in unitati de virgula fixa; restul raman intregi mici, fiindca
+                // un long este la fel de des un numarator obisnuit.
+                var picked = TameIntegers[(int)((raw >> 8) % (ulong)TameIntegers.Length)];
+                return Narrow(kind, TameSign(kind, (raw % 4) == 0 ? picked * FixedPointPrecision : picked));
+            }
+
+            default:
+                return Narrow(kind, TameSign(kind, TameIntegers[(int)(raw % (ulong)TameIntegers.Length)]));
+        }
+    }
+
+    /// <summary>
+    /// Semnul, pentru felurile FARA semn. Fara pasul asta un -1 bland ar iesi din Narrow ca
+    /// 4.294.967.295 pe uint si ca 18.446.744.073.709.551.615 pe ulong - adica exact numaratorul urias
+    /// din care se naste o bucla fara sfarsit sau o citire in afara tabloului, tocmai ce incearca
+    /// TameValue sa evite. Pe felurile cu semn valoarea trece neatinsa.
+    /// </summary>
+    private static long TameSign(LeafKind kind, long value)
+    {
+        if (value >= 0)
+            return value;
+
+        switch (kind)
+        {
+            case LeafKind.Byte:
+            case LeafKind.UInt16:
+            case LeafKind.UInt32:
+            case LeafKind.UInt64:
+                return -value;
+            default:
+                return value;
+        }
+    }
+
+    private static readonly long[] TameIntegers =
+    [
+        0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16, 20, 24, 32, 48, 64,
+        -1, -2, -3, -8, 100, 128, 256, 1000,
+    ];
+
+    private static readonly double[] TameReals =
+    [
+        0.0, 0.0, 1.0, -1.0, 0.5, -0.5, 0.25, 2.0, 3.0, 4.0, 10.0, 100.0,
+        0.1, -0.1, 1.5, 3.25, -0.75, 0.001, 60.0, 0.0166015625,
+    ];
+
+    private static readonly char[] TameChars =
+    [
+        'a', 'b', 'c', 'z', 'A', 'B', 'Z', '0', '1', '9', ' ', '_', '-', '.', '/', ':',
+    ];
+
     private static long RandomInteger(int strategy, ulong raw)
     {
         unchecked

@@ -27,6 +27,50 @@ internal static class ArgPlans
 }
 
 /// <summary>
+/// Etichetele de CALITATE a intrarilor. Scrise ca atare in coloana arg_quality, si numarate cu grep.
+///
+/// De ce sunt un vocabular si nu niste siruri imprastiate prin cod. Coloana asta este singurul lucru care
+/// spune cat valoreaza un verdict, si masuratoarea o arata fara drept de apel: pe "generated" au iesit 54
+/// AGREES si 29 DISAGREES - cunoastere; pe "null-reference" au iesit 91 THREW_BOTH si 67 "amandoua null" -
+/// zgomot. Daca doua bucati de cod ar scrie eticheta putin altfel, cele doua gramezi s-ar amesteca si
+/// deosebirea asta s-ar pierde.
+///
+/// Treptele, de la cea mai tare la cea mai slaba:
+///
+///   generated          valori din generator, aceiasi biti pe ambele parti (primitive, enum, structuri)
+///   ref-string         un sir cu continut adevarat, acelasi pe ambele parti
+///   ref-array          un tablou cu elemente adevarate
+///   ref-object-string  un System.Object caruia i s-a dat un sir - drum separat, ca sa se poata scoate
+///   ref-array-empty    un tablou GOL: slab, dar tot altceva decat null, fiindca Length si foreach merg
+///   zeroed-struct      o structura cu referinte inauntru, adica instanta implicita pe ambele parti
+///   null-reference     null pe ambele parti - simetric, dar steril
+///
+/// Si pentru receptor:
+///
+///   generated-receiver     receptor structura, fabricat din generator ca orice alta structura
+///   seeded-receiver        obiect pe zero caruia i s-au SCRIS aceleasi campuri primitive pe ambele parti
+///   zeroed-receiver        structura pe zero
+///   uninitialised-receiver obiect pe zero, neatins - cea mai slaba treapta
+/// </summary>
+internal static class ArgQuality
+{
+    public const string Generated = "generated";
+    public const string ZeroedStruct = "zeroed-struct";
+    public const string Null = "null-reference";
+    public const string None = "no-arguments";
+
+    public const string Text = "ref-string";
+    public const string Array = "ref-array";
+    public const string EmptyArray = "ref-array-empty";
+    public const string ObjectText = "ref-object-string";
+
+    public const string UninitialisedReceiver = "uninitialised-receiver";
+    public const string SeededReceiver = "seeded-receiver";
+    public const string ZeroedReceiver = "zeroed-receiver";
+    public const string GeneratedReceiver = "generated-receiver";
+}
+
+/// <summary>
 /// Felul unui tip, in vocabularul cerut pentru dump: primitiv / enum / structura / clasa / tablou /
 /// generic / byref / pointer.
 /// </summary>
@@ -332,6 +376,13 @@ internal static class MethodRequirements
     /// Calitatea argumentelor, ca sir de etichete separate prin bara verticala - aceeasi forma ca
     /// "degeneracies" din recensamant, ca sa se poata numara la fel.
     ///
+    /// ATENTIE la ce este si ce nu este eticheta din DUMP: este o previziune facuta numai din metadatele
+    /// partii recuperate, inainte sa existe partea jocului. Cand maturarea chiar cheama metoda, ea
+    /// recalculeaza calitatea din ce a reusit sa fabrice - un parametru "null" poate ajunge acolo
+    /// "ref-string", iar un receptor "uninitialised-receiver" poate ajunge "seeded-receiver". In
+    /// active-results.tsv se scrie eticheta ADEVARATA, cea de la apel; in active-requirements.tsv ramane
+    /// previziunea. Cele doua coloane NU sunt acelasi lucru si nu se compara intre ele.
+    ///
     /// Fara coloana asta raportul ar fi o minciuna prin omisiune. O metoda de instanta chemata cu receptor
     /// fabricat pe zero care raspunde acelasi lucru pe ambele parti NU se aduna cu una statica chemata cu
     /// valori din generator: prima poate sa fi iesit pe prima ramura, aceeasi pe ambele parti, fara sa
@@ -342,22 +393,22 @@ internal static class MethodRequirements
         var labels = new List<string>();
 
         if (!requirement.IsStatic)
-            labels.Add(requirement.ReceiverPlan == ArgPlans.Zeroed ? "zeroed-receiver" : "uninitialised-receiver");
+            labels.Add(requirement.ReceiverPlan == ArgPlans.Zeroed ? ArgQuality.ZeroedReceiver : ArgQuality.UninitialisedReceiver);
 
         if (requirement.Parameters.Length > 0)
         {
             if (requirement.Parameters.IndexOf(":" + ArgPlans.Null, StringComparison.Ordinal) >= 0)
-                labels.Add("null-reference");
+                labels.Add(ArgQuality.Null);
 
             if (requirement.Parameters.IndexOf(":" + ArgPlans.Zeroed, StringComparison.Ordinal) >= 0)
-                labels.Add("zeroed-struct");
+                labels.Add(ArgQuality.ZeroedStruct);
 
             if (requirement.Parameters.IndexOf(":" + ArgPlans.Generated, StringComparison.Ordinal) >= 0)
-                labels.Add("generated");
+                labels.Add(ArgQuality.Generated);
         }
 
         if (labels.Count == 0)
-            labels.Add("no-arguments");
+            labels.Add(ArgQuality.None);
 
         return string.Join("|", labels);
     }

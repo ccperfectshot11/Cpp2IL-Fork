@@ -56,7 +56,10 @@ internal static class ReceiverTransfer
     // care Cpp2IL nu le analizeaza deloc. Campurile mostenite de acolo - m_CachedPtr al lui
     // UnityEngine.Object, de pilda - nu exista pe invelisul interop si ar umple raportul cu "not found"
     // care nu spune nimic despre codul recuperat.
-    private static bool IsStubbedModule(string assemblyName) =>
+    // Internal si nu private: ReceiverSeed taie exact acelasi lant de mostenire cand SCRIE campuri, si o
+    // a doua copie a listei ar putea sa se desincronizeze - iar atunci un camp ar fi citit dintr-un modul
+    // ciot de o parte si sarit de cealalta.
+    internal static bool IsStubbedModule(string assemblyName) =>
         assemblyName == null
         || assemblyName.StartsWith("UnityEngine.", StringComparison.Ordinal)
         || assemblyName.StartsWith("Unity.", StringComparison.Ordinal)

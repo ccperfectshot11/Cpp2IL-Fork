@@ -22,16 +22,30 @@ namespace Cpp2IL.VerifyMod;
 ///
 /// Ce se castiga cu adevarat, spus fara infrumusetare. Argumentele primitive, enum-urile si structurile
 /// sunt IDENTICE bit cu bit pe cele doua parti, fiindca sunt generate o data si materializate in fiecare
-/// dintre cele doua tipuri din aceleasi frunze. Argumentele de tip clasa sunt null pe amandoua partile,
-/// deci tot identice. Receptorul NU poate fi acelasi obiect - motivul intreg este scris in NativeReceiver -
-/// dar poate fi si este ECHIVALENT: pe ambele parti un obiect proaspat cu toate campurile pe zero. Deci
+/// dintre cele doua tipuri din aceleasi frunze. Sirurile si tablourile se fabrica la fel, prin
+/// ReferenceArguments, si tot dupa aceeasi regula: daca valoarea nu incape in AMANDOUA universurile, nu se
+/// foloseste in niciunul si parametrul ramane null de ambele parti. Receptorul NU poate fi acelasi obiect -
+/// motivul intreg este scris in NativeReceiver - dar poate fi si este ECHIVALENT: pe ambele parti un obiect
+/// proaspat pe zero, caruia ReceiverSeed ii scrie apoi ACELEASI valori in campurile primitive. Deci
 /// intrarile sunt egale prin constructie chiar si acolo unde nu sunt egale prin referinta.
+///
+/// De ce s-a facut pasul asta, in cifre masurate si nu in impresii. Pe randurile cu argumente "generated"
+/// au iesit 54 AGREES si 29 DISAGREES - verdicte care spun ceva despre cod. Pe randurile "null-reference"
+/// au iesit 91 THREW_BOTH, 67 "amandoua au intors null" si 53 THREW_ONE - adica amandoua implementarile
+/// s-au impiedicat de acelasi null inainte sa calculeze ceva. Pe "uninitialised-receiver", aproape numai
+/// IL_INVALID. Din 1.883 de rezultate, 171 erau "generated"; restul erau, in cea mai mare parte, zgomot
+/// simetric.
 ///
 /// Ce NU dovedeste, si trebuie citit langa orice numar pe care il scoate. O metoda chemata cu receptor pe
 /// zero si argumente null are toate sansele sa iasa pe prima ramura, aceeasi pe ambele parti. Cand asta se
 /// intampla, "AGREES" inseamna doar ca amandoua au refuzat intrarea in acelasi fel. De aceea fiecare rand
 /// isi poarta calitatea argumentelor, de aceea raportul NU are un singur numar, si de aceea verdictele
 /// slabe au nume propriu in loc sa fie varsate peste cele tari.
+///
+/// Si inca o deosebire care se pierde usor: calitatea scrisa in active-requirements.tsv este o PREVIZIUNE
+/// facuta din metadate, iar cea scrisa in active-results.tsv este ce s-a fabricat CU ADEVARAT la apel.
+/// Un "null-reference" prezis poate ajunge "ref-string" masurat, si un "uninitialised-receiver" prezis
+/// poate ajunge "seeded-receiver". Cele doua coloane nu se compara intre ele.
 ///
 /// Variabile de mediu - oprita implicit, ca tot ce ruleaza cod neverificat in joc:
 ///
@@ -47,6 +61,8 @@ namespace Cpp2IL.VerifyMod;
 ///   CPP2IL_ACTIVE_RECEIVERS=0  numai metode statice, niciun receptor fabricat
 ///   CPP2IL_ACTIVE_PREJIT=0     nu mai compileaza corpul recuperat inainte de apel (implicit compileaza)
 ///   CPP2IL_ACTIVE_ENUM_DOMAIN=0  enum-urile se fuzzeaza pe tot intervalul intregului, nu pe valorile declarate
+///   CPP2IL_ACTIVE_REF_ARGS=0     parametrii de tip clasa raman null pe ambele parti (fara siruri si tablouri fabricate)
+///   CPP2IL_ACTIVE_RECEIVER_FIELDS=0  receptorul ramane pe zero, fara campuri scrise
 ///   CPP2IL_ACTIVE_PREPARE_PASS=0 fara trecere de pregatire separata (pregatirea ramane doar per metoda)
 ///   CPP2IL_ACTIVE_PREPARE_ALL=1  pregateste TOATE metodele chemabile, nu doar pe cele pe care le cheama sesiunea
 ///   CPP2IL_ACTIVE_PREPARE_ONLY=1 se opreste dupa pregatire, fara niciun apel - asa se cladeste lista permanenta
@@ -109,6 +125,8 @@ internal static class ActiveSweep
     private static bool _receivers;
     private static bool _preJit;
     private static bool _enumDomain;
+    private static bool _refArgs;
+    private static bool _receiverFields;
     private static bool _preparePass;
     private static bool _prepareAll;
     private static bool _prepareOnly;
@@ -167,6 +185,8 @@ internal static class ActiveSweep
         _receivers = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_RECEIVERS") != "0";
         _preJit = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREJIT") != "0";
         _enumDomain = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_ENUM_DOMAIN") != "0";
+        _refArgs = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_REF_ARGS") != "0";
+        _receiverFields = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_RECEIVER_FIELDS") != "0";
         _preparePass = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_PASS") != "0";
         _prepareAll = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_ALL") == "1";
         _prepareOnly = Environment.GetEnvironmentVariable("CPP2IL_ACTIVE_PREPARE_ONLY") == "1";
@@ -185,7 +205,9 @@ internal static class ActiveSweep
         _log("Faza 4 (maturare activa) pornita. dll=" + _dllDirectory
             + " max=" + (_max == 0 ? "toate" : _max.ToString(CultureInfo.InvariantCulture))
             + " pe-cadru=" + _perFrame + " siguranta=" + (_safety ? "pornita" : "OPRITA")
-            + " receptori=" + (_receivers ? "da" : "nu"));
+            + " receptori=" + (_receivers ? "da" : "nu")
+            + " argumente-referinta=" + (_refArgs ? "da" : "nu")
+            + " campuri-receptor=" + (_receiverFields ? "da" : "nu"));
 
         if (!_safety)
             _log("ATENTIE: lista de siguranta este oprita. Se vor chema si metode de plati, cont si retea.");
@@ -784,8 +806,15 @@ internal static class ActiveSweep
             return;
         }
 
+        // Un singur generator pentru receptor SI argumente, semanat numai din samanta rularii si din cheia
+        // metodei. Ordinea consumului - intai receptorul, apoi argumentele, de la stanga la dreapta - face
+        // parte din contract: schimbata, aceeasi metoda ar primi alte valori la aceeasi samanta si doua
+        // rulari nu s-ar mai putea pune una langa alta.
+        var random = new DeterministicRandom(DeterministicRandom.SeedFor(_seed, key));
+
         object gameReceiver = null;
         object ourReceiver = null;
+        var receiverLabel = "";
 
         if (!game.IsStatic)
         {
@@ -795,29 +824,23 @@ internal static class ActiveSweep
                 return;
             }
 
-            gameReceiver = NativeReceiver.Allocate(game.DeclaringType, out var whyGame);
-            if (gameReceiver == null)
+            if (!BuildReceiver(game, ours, ref random, out gameReceiver, out ourReceiver, out receiverLabel, out var whyReceiver))
             {
-                NotAttempted(key, assembly, quality, "receptorul jocului: " + whyGame);
-                return;
-            }
-
-            try
-            {
-                ourReceiver = RuntimeHelpers.GetUninitializedObject(ours.DeclaringType);
-            }
-            catch (Exception ex)
-            {
-                NotAttempted(key, assembly, quality, "receptorul recuperat: " + ex.GetType().Name);
+                NotAttempted(key, assembly, quality, whyReceiver);
                 return;
             }
         }
 
-        if (!BuildArguments(game, ours, key, out var gameArgs, out var ourArgs, out var argProblem))
+        if (!BuildArguments(game, ours, ref random, out var gameArgs, out var ourArgs, out var argLabels, out var argProblem))
         {
             NotAttempted(key, assembly, quality, argProblem);
             return;
         }
+
+        // De aici incolo se scrie calitatea ADEVARATA, nu cea prezisa in dump: ce s-a fabricat efectiv
+        // pentru metoda asta. Fara inlocuirea asta, un parametru care a primit un sir adevarat ar fi tot
+        // numarat ca "null-reference", iar intreaga masuratoare a imbunatatirii ar fi invizibila.
+        quality = Quality(receiverLabel, argLabels);
 
         // Compilarea corpului recuperat, INAINTE de orice apel si inaintea metodei jocului.
         //
@@ -929,11 +952,12 @@ internal static class ActiveSweep
     /// metodei, si apoi se toarna in tipul jocului si in tipul recuperat separat. Deci nu se compara doua
     /// generari care se spera ca au iesit la fel, ci aceleasi numere puse in doua forme.
     /// </summary>
-    private static bool BuildArguments(MethodBase game, MethodBase ours, string key,
-        out object[] gameArgs, out object[] ourArgs, out string problem)
+    private static bool BuildArguments(MethodBase game, MethodBase ours, ref DeterministicRandom random,
+        out object[] gameArgs, out object[] ourArgs, out List<string> labels, out string problem)
     {
         gameArgs = null;
         ourArgs = null;
+        labels = new List<string>();
         problem = "";
 
         var gameParameters = game.GetParameters();
@@ -948,8 +972,6 @@ internal static class ActiveSweep
         gameArgs = new object[gameParameters.Length];
         ourArgs = new object[ourParameters.Length];
 
-        var random = new DeterministicRandom(DeterministicRandom.SeedFor(_seed, key));
-
         for (var i = 0; i < gameParameters.Length; i++)
         {
             var gameType = gameParameters[i].ParameterType;
@@ -958,21 +980,41 @@ internal static class ActiveSweep
             switch (TypeKinds.PlanFor(ourType))
             {
                 case ArgPlans.Null:
-                    gameArgs[i] = null;
-                    ourArgs[i] = null;
+                    // Intai se incearca o valoare ADEVARATA - un sir, un tablou. Cand nu se poate turna in
+                    // amandoua universurile, se cade inapoi pe null de ambele parti: simetric, steril, dar
+                    // niciodata diferit intre parti.
+                    if (_refArgs && ReferenceArguments.TryBuild(gameType, ourType, ref random,
+                            out gameArgs[i], out ourArgs[i], out var reference))
+                    {
+                        labels.Add(reference);
+                    }
+                    else
+                    {
+                        gameArgs[i] = null;
+                        ourArgs[i] = null;
+                        labels.Add(ArgQuality.Null);
+                    }
+
                     break;
 
                 case ArgPlans.Generated:
-                    if (!Generate(gameType, ourType, ref random, out gameArgs[i], out ourArgs[i]))
+                    if (Generate(gameType, ourType, ref random, out gameArgs[i], out ourArgs[i]))
+                    {
+                        labels.Add(ArgQuality.Generated);
+                    }
+                    else
                     {
                         // Formele nu se potrivesc, adica layout-ul recuperat difera de cel al jocului. Este
                         // un rezultat in sine, dar nu unul care sa opreasca apelul: se cade pe zero de
-                        // ambele parti, tot simetric, si se merge mai departe.
+                        // ambele parti, tot simetric, si se merge mai departe. Eticheta scade odata cu
+                        // valoarea - randul asta NU este "generated", oricat ar spune dump-ul.
                         if (!Zero(gameType, ourType, out gameArgs[i], out ourArgs[i]))
                         {
                             problem = "parametrul " + i + " nu s-a putut fabrica";
                             return false;
                         }
+
+                        labels.Add(ArgQuality.ZeroedStruct);
                     }
 
                     break;
@@ -984,6 +1026,7 @@ internal static class ActiveSweep
                         return false;
                     }
 
+                    labels.Add(ArgQuality.ZeroedStruct);
                     break;
 
                 default:
@@ -993,6 +1036,120 @@ internal static class ActiveSweep
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Cei doi receptori, echivalenti prin constructie.
+    ///
+    /// Trei drumuri, in ordinea tariei lor. O structura se fabrica din generator, exact ca un argument
+    /// structura - pana acum era lasata pe zero fara niciun motiv. O clasa se aloca pe zero pe ambele
+    /// parti si apoi i se scriu ACELEASI valori in campurile primitive (ReceiverSeed). Cand nici asta nu
+    /// prinde niciun camp, ramane ce era: doua obiecte pe zero.
+    ///
+    /// Un esec de scriere care lasa campul scris pe o parte si nescris pe cealalta opreste metoda cu totul.
+    /// Nu se cheama pe receptori inegali - un DISAGREES iesit din asta ar fi o minciuna curata.
+    /// </summary>
+    private static bool BuildReceiver(MethodBase game, MethodBase ours, ref DeterministicRandom random,
+        out object gameReceiver, out object ourReceiver, out string label, out string problem)
+    {
+        gameReceiver = null;
+        ourReceiver = null;
+        label = "";
+        problem = "";
+
+        var gameType = game.DeclaringType;
+        var ourType = ours.DeclaringType;
+
+        if (gameType == null || ourType == null)
+        {
+            problem = "metoda de instanta fara tip declarant";
+            return false;
+        }
+
+        // Amandoua trebuie sa fie structuri ca sa mearga drumul asta: Il2CppInterop proiecteaza un tip
+        // valoare NEblittable ca pe o clasa invelis, si atunci cele doua parti nu se mai fabrica la fel.
+        if (gameType.IsValueType && ourType.IsValueType)
+        {
+            if (Generate(gameType, ourType, ref random, out gameReceiver, out ourReceiver))
+            {
+                label = ArgQuality.GeneratedReceiver;
+                return true;
+            }
+
+            if (!Zero(gameType, ourType, out gameReceiver, out ourReceiver))
+            {
+                problem = "receptorul structura nu s-a putut construi";
+                return false;
+            }
+
+            label = ArgQuality.ZeroedReceiver;
+            return true;
+        }
+
+        gameReceiver = NativeReceiver.Allocate(gameType, out var whyGame);
+        if (gameReceiver == null)
+        {
+            problem = "receptorul jocului: " + whyGame;
+            return false;
+        }
+
+        try
+        {
+            ourReceiver = RuntimeHelpers.GetUninitializedObject(ourType);
+        }
+        catch (Exception ex)
+        {
+            problem = "receptorul recuperat: " + ex.GetType().Name;
+            return false;
+        }
+
+        label = ourType.IsValueType ? ArgQuality.ZeroedReceiver : ArgQuality.UninitialisedReceiver;
+
+        if (!_receiverFields)
+            return true;
+
+        var report = new SeedReport();
+        ReceiverSeed.Fill(gameReceiver, ourReceiver, ourType, ref random, report);
+
+        if (report.Tainted)
+        {
+            problem = "receptorii au ramas diferiti: " + report.FirstProblem;
+            return false;
+        }
+
+        if (report.Written > 0)
+            label = ArgQuality.SeededReceiver;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Ordinea etichetelor intr-un sir de calitate. FIXA, si nu ordinea parametrilor: altfel aceeasi metoda
+    /// scrisa cu argumentele invers ar da doua siruri diferite, iar numaratoarea pe calitate - singurul fel
+    /// in care se vede daca pasul asta a ajutat - s-ar imprastia in zeci de galeti aproape identice.
+    /// </summary>
+    private static readonly string[] QualityOrder =
+    {
+        ArgQuality.Null, ArgQuality.ZeroedStruct, ArgQuality.EmptyArray,
+        ArgQuality.ObjectText, ArgQuality.Array, ArgQuality.Text, ArgQuality.Generated,
+    };
+
+    /// <summary>Eticheta de calitate a unui apel, din ce s-a fabricat cu adevarat.</summary>
+    private static string Quality(string receiverLabel, List<string> argLabels)
+    {
+        var labels = new List<string>();
+
+        if (!string.IsNullOrEmpty(receiverLabel))
+            labels.Add(receiverLabel);
+
+        foreach (var name in QualityOrder)
+            if (argLabels.Contains(name))
+                labels.Add(name);
+
+        if (labels.Count == 0)
+            labels.Add(ArgQuality.None);
+
+        return string.Join("|", labels);
     }
 
     private static bool Generate(Type gameType, Type ourType, ref DeterministicRandom random, out object gameValue, out object ourValue)
@@ -1381,6 +1538,7 @@ internal static class ActiveSweep
         var byAssembly = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         var byType = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         var agreeByQuality = new Dictionary<string, int>(StringComparer.Ordinal);
+        var disagreeByQuality = new Dictionary<string, int>(StringComparer.Ordinal);
         var byCrashStage = new Dictionary<string, int>(StringComparer.Ordinal);
         var total = 0;
 
@@ -1416,6 +1574,9 @@ internal static class ActiveSweep
 
                 if (verdict == VerdictAgrees)
                     Bump(agreeByQuality, quality);
+
+                if (verdict == VerdictDisagrees)
+                    Bump(disagreeByQuality, quality);
 
                 if (verdict == VerdictCrashed)
                     Bump(byCrashStage, fields.Length > 3 ? fields[3] : "necunoscuta");
@@ -1465,7 +1626,18 @@ internal static class ActiveSweep
         }
 
         builder.AppendLine();
+        builder.AppendLine("== DISAGREES, pe calitatea argumentelor ==");
+        builder.AppendLine("   Se citeste IMPREUNA cu acordurile de mai sus. Un dezacord pe argumente fabricate");
+        builder.AppendLine("   este o pista adevarata; unul pe argumente null inseamna cel mai adesea ca cele doua");
+        builder.AppendLine("   parti s-au impiedicat altfel de acelasi null, nu ca metoda calculeaza altceva.");
+        foreach (var pair in Sorted(disagreeByQuality))
+            builder.AppendLine("  " + pair.Key.PadRight(48) + pair.Value);
+
+        builder.AppendLine();
         builder.AppendLine("== pe calitatea argumentelor, toate verdictele ==");
+        builder.AppendLine("   Calitatea de aici este cea MASURATA la apel, nu cea prezisa in active-requirements.tsv:");
+        builder.AppendLine("   ref-string, ref-array, ref-object-string si seeded-receiver apar numai daca valoarea");
+        builder.AppendLine("   chiar s-a putut turna in amandoua universurile de tipuri.");
         foreach (var pair in Sorted(byQuality))
             builder.AppendLine("  " + pair.Key.PadRight(48) + pair.Value);
 
